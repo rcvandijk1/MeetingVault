@@ -1,0 +1,72 @@
+<UserControl x:Class="MeetingVault.App.Views.SpeakerReviewView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock Text="Speaker Review" Style="{StaticResource HeaderText}"/>
+            <TextBlock Text="{Binding HeaderText}" Style="{StaticResource MutedText}" Margin="0,0,0,12"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" Style="{StaticResource Card}">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ItemsControl ItemsSource="{Binding Speakers}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border Background="#1A1C22" BorderBrush="{StaticResource BorderBrush}"
+                                    BorderThickness="1" CornerRadius="6" Margin="0,0,0,8" Padding="12">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="2*"/>
+                                        <ColumnDefinition Width="3*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{Binding OriginalDisplayName}" FontWeight="SemiBold" FontSize="15"/>
+                                        <TextBlock>
+                                            <Run Text="First seen "/>
+                                            <Run Text="{Binding FirstSeenAt}"/>
+                                        </TextBlock>
+                                        <TextBlock>
+                                            <Run Text="Speaking time "/>
+                                            <Run Text="{Binding TotalSpeakingSeconds, StringFormat='{}{0:F1}s'}"/>
+                                        </TextBlock>
+                                        <TextBlock Text="{Binding SpeakerId}" Style="{StaticResource MutedText}" FontSize="11"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="Real name"/>
+                                        <TextBox Text="{Binding NewName, UpdateSourceTrigger=PropertyChanged}" Margin="0,2,0,8"/>
+                                        <CheckBox IsChecked="{Binding SaveProfile}" Content="Save as reusable speaker profile"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                            <Button Content="Play sample"
+                                                    Command="{Binding DataContext.PlaySampleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}"/>
+                                            <Button Content="Mark as me"
+                                                    Command="{Binding DataContext.MarkAsMeCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}"/>
+                                            <Button Content="Ignore"
+                                                    Command="{Binding DataContext.IgnoreCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}"/>
+                                            <Button Content="Merge"
+                                                    Command="{Binding DataContext.MergeCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                                    CommandParameter="{Binding}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </Border>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="Save and regenerate transcript" Style="{StaticResource PrimaryButton}"
+                    Command="{Binding SaveAllCommand}"/>
+        </StackPanel>
+    </Grid>
+</UserControl>

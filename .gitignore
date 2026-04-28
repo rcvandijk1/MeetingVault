@@ -1,0 +1,31 @@
+# Build outputs
+bin/
+obj/
+out/
+publish/
+*.user
+*.suo
+.vs/
+
+# Visual Studio / Rider
+*.userprefs
+*.swp
+.idea/
+.vscode/
+
+# NuGet
+*.nupkg
+packages/
+
+# Whisper models (large binaries) — match only top-level / app-data folders
+*.bin
+/Models/
+**/AppData/**/Models/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Local app data leaking in
+appsettings.Local.json
+*.local.json
