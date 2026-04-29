@@ -94,6 +94,99 @@ public class SqliteMeetingSessionStore : IMeetingSessionStore
         await conn.ExecuteAsync("DELETE FROM Meetings WHERE SessionId=@id", new { id = sessionId });
     }
 
+    public async Task ReplaceSegmentsAsync(string sessionId, IReadOnlyList<TranscriptionSegment> segments, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString.Value);
+        await conn.OpenAsync(ct);
+        await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+        await conn.ExecuteAsync("DELETE FROM TranscriptSegments WHERE SessionId=@id",
+            new { id = sessionId }, tx);
+        foreach (var seg in segments)
+        {
+            await conn.ExecuteAsync(@"
+                INSERT INTO TranscriptSegments
+                    (SegmentId, SessionId, StartSeconds, EndSeconds, SpeakerId, SpeakerName, Text, Confidence, SourceAudio)
+                VALUES (@SegmentId, @SessionId, @Start, @End, @SpeakerId, @SpeakerName, @Text, @Confidence, @SourceAudio);",
+                new
+                {
+                    seg.SegmentId,
+                    SessionId = sessionId,
+                    Start = seg.Start.TotalSeconds,
+                    End = seg.End.TotalSeconds,
+                    seg.SpeakerId,
+                    seg.SpeakerName,
+                    seg.Text,
+                    seg.Confidence,
+                    SourceAudio = seg.SourceAudio.ToString()
+                }, tx);
+        }
+        await tx.CommitAsync(ct);
+    }
+
+    public async Task ReplaceSpeakersAsync(string sessionId, IReadOnlyList<Speaker> speakers, CancellationToken ct = default)
+    {
+        await using var conn = new SqliteConnection(_connectionString.Value);
+        await conn.OpenAsync(ct);
+        await using var tx = (SqliteTransaction)await conn.BeginTransactionAsync(ct);
+        await conn.ExecuteAsync("DELETE FROM Speakers WHERE SessionId=@id",
+            new { id = sessionId }, tx);
+        foreach (var s in speakers)
+        {
+            await conn.ExecuteAsync(@"
+                INSERT INTO Speakers
+                    (SessionId, SpeakerId, DisplayName, IsKnown, Confidence, TotalSpeakingSeconds, SampleAudioPath)
+                VALUES (@SessionId, @SpeakerId, @DisplayName, @IsKnown, @Confidence, @TotalSpeakingSeconds, @SampleAudioPath);",
+                new
+                {
+                    SessionId = sessionId,
+                    s.SpeakerId,
+                    s.DisplayName,
+                    IsKnown = s.IsKnown ? 1 : 0,
+                    s.Confidence,
+                    s.TotalSpeakingSeconds,
+                    s.SampleAudioPath
+                }, tx);
+        }
+        await tx.CommitAsync(ct);
+    }
+
+    public async Task<IReadOnlyList<TranscriptSearchHit>> SearchTranscriptsAsync(string query, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return Array.Empty<TranscriptSearchHit>();
+
+        await using var conn = new SqliteConnection(_connectionString.Value);
+        await conn.OpenAsync(ct);
+
+        // Simple LIKE search; SQLite FTS would be a Phase-6 upgrade.
+        var rows = await conn.QueryAsync<SearchRow>(@"
+            SELECT m.SessionId, m.Subject, m.Platform, m.StartTime,
+                   ts.Text AS Snippet, ts.StartSeconds AS SegmentStart, ts.SpeakerName,
+                   (SELECT COUNT(*) FROM TranscriptSegments ts2
+                      WHERE ts2.SessionId = m.SessionId AND ts2.Text LIKE @q) AS MatchCount
+            FROM Meetings m
+            JOIN TranscriptSegments ts ON ts.SessionId = m.SessionId
+            WHERE ts.Text LIKE @q
+            GROUP BY m.SessionId
+            ORDER BY m.StartTime DESC
+            LIMIT 200;",
+            new { q = $"%{query}%" });
+
+        return rows.Select(r => new TranscriptSearchHit
+        {
+            SessionId = r.SessionId,
+            Subject = r.Subject,
+            Platform = r.Platform,
+            StartTime = DateTime.Parse(r.StartTime),
+            Snippet = Truncate(r.Snippet, 240),
+            SegmentStart = TimeSpan.FromSeconds(r.SegmentStart),
+            SpeakerName = r.SpeakerName,
+            MatchCount = r.MatchCount
+        }).ToList();
+    }
+
+    private static string Truncate(string s, int max) =>
+        string.IsNullOrEmpty(s) ? string.Empty : (s.Length <= max ? s : s.Substring(0, max) + "…");
+
     private static MeetingRow ToRow(MeetingSession s) => new()
     {
         SessionId = s.SessionId,
@@ -163,5 +256,17 @@ public class SqliteMeetingSessionStore : IMeetingSessionStore
         public string? MeetingUrl { get; set; }
         public string? Notes { get; set; }
         public string Status { get; set; } = "Detected";
+    }
+
+    private class SearchRow
+    {
+        public string SessionId { get; set; } = string.Empty;
+        public string Subject { get; set; } = string.Empty;
+        public string Platform { get; set; } = string.Empty;
+        public string StartTime { get; set; } = string.Empty;
+        public string Snippet { get; set; } = string.Empty;
+        public double SegmentStart { get; set; }
+        public string? SpeakerName { get; set; }
+        public int MatchCount { get; set; }
     }
 }

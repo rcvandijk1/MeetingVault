@@ -15,14 +15,16 @@ public partial class MainViewModel : ObservableObject
     public HistoryViewModel History { get; }
     public SpeakerReviewViewModel SpeakerReview { get; }
     public SettingsViewModel Settings { get; }
+    public SearchViewModel Search { get; }
 
     public MainViewModel(DashboardViewModel dashboard, HistoryViewModel history,
-        SpeakerReviewViewModel speakerReview, SettingsViewModel settings)
+        SpeakerReviewViewModel speakerReview, SettingsViewModel settings, SearchViewModel search)
     {
         Dashboard = dashboard;
         History = history;
         SpeakerReview = speakerReview;
         Settings = settings;
+        Search = search;
         CurrentView = Dashboard;
 
         Dashboard.OnSpeakerReviewRequested = session =>
@@ -45,5 +47,6 @@ public partial class MainViewModel : ObservableObject
         ActiveTab = "History";
     }
     [RelayCommand] private void ShowSpeakerReview() { CurrentView = SpeakerReview; ActiveTab = "Speakers"; }
+    [RelayCommand] private void ShowSearch() { CurrentView = Search; ActiveTab = "Search"; }
     [RelayCommand] private void ShowSettings() { CurrentView = Settings; ActiveTab = "Settings"; }
 }

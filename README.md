@@ -116,7 +116,27 @@ Documents
   screen with rename / mark-as-me / ignore / merge / save-profile actions.
   Saving the review re-renders `transcript.md` with real names.
 - **Phase 5** — SQLite index (`Meetings`, `TranscriptSegments`, `Speakers`,
-  `SpeakerProfiles`, `AppSettings`) for history listing and filtering.
+  `SpeakerProfiles`, `AppSettings`) for history listing and filtering, plus a
+  **Search** view that runs `LIKE`-based full-text-ish search across all
+  segments and shows a snippet, the matching speaker, and the timestamp.
+  Renaming a speaker in the review screen updates both the JSON files **and**
+  the SQLite index so search results show the real name.
+
+Additional behaviours that span the phases:
+
+- **Auto-start recording** when detection confidence is ≥ 70% and the user
+  has enabled it in Settings. Auto-start is suppressed until detection drops
+  to "no meeting" again, so leaving and re-joining a meeting starts a fresh
+  session instead of appending to the previous one.
+- **Tray recording indicator** — the tray tooltip and the window title
+  reflect the coordinator state (Recording / Transcribing / Awaiting review).
+- **Raw audio cleanup** — when *Keep raw audio* is unchecked, the per-source
+  `audio-me.wav` and `audio-others.wav` are deleted after a successful
+  transcription, leaving only the combined mix.
+- **Calendar correlation** — `ICalendarCorrelationService` is consulted on
+  Stop to optionally fill in subject / organizer / attendees / meeting URL.
+  The default registration is a no-op (`NullCalendarCorrelationService`); a
+  real Outlook implementation should swap it in DI when ready.
 
 ## Known limitations
 

@@ -3,6 +3,7 @@ using MeetingVault.App.ViewModels;
 using MeetingVault.Core.Services;
 using MeetingVault.Infrastructure;
 using MeetingVault.Infrastructure.Audio;
+using MeetingVault.Infrastructure.Calendar;
 using MeetingVault.Infrastructure.Detection;
 using MeetingVault.Infrastructure.Diarization;
 using MeetingVault.Infrastructure.Logging;
@@ -108,6 +109,7 @@ public partial class App : Application
         services.AddSingleton<ISpeakerStore, JsonSpeakerStore>();
         services.AddSingleton<ISpeakerProfileStore, JsonSpeakerProfileStore>();
         services.AddSingleton<IMeetingSessionStore, SqliteMeetingSessionStore>();
+        services.AddSingleton<ICalendarCorrelationService, NullCalendarCorrelationService>();
         services.AddSingleton<IRecordingCoordinator, RecordingCoordinator>();
 
         // ViewModels
@@ -115,6 +117,7 @@ public partial class App : Application
         services.AddSingleton<HistoryViewModel>();
         services.AddSingleton<SpeakerReviewViewModel>();
         services.AddSingleton<SettingsViewModel>();
+        services.AddSingleton<SearchViewModel>();
         services.AddSingleton<MainViewModel>();
 
         services.AddSingleton<MainWindow>();

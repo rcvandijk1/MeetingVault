@@ -21,6 +21,7 @@ public class RecordingCoordinator : IRecordingCoordinator
     private readonly ISpeakerStore _speakerStore;
     private readonly IMeetingSessionStore _sessionStore;
     private readonly ISettingsStore _settings;
+    private readonly ICalendarCorrelationService _calendar;
     private readonly ILogger<RecordingCoordinator> _logger;
 
     public RecordingCoordinator(
@@ -33,6 +34,7 @@ public class RecordingCoordinator : IRecordingCoordinator
         ISpeakerStore speakerStore,
         IMeetingSessionStore sessionStore,
         ISettingsStore settings,
+        ICalendarCorrelationService calendar,
         ILogger<RecordingCoordinator> logger)
     {
         _paths = paths;
@@ -44,6 +46,7 @@ public class RecordingCoordinator : IRecordingCoordinator
         _speakerStore = speakerStore;
         _sessionStore = sessionStore;
         _settings = settings;
+        _calendar = calendar;
         _logger = logger;
     }
 
@@ -52,6 +55,7 @@ public class RecordingCoordinator : IRecordingCoordinator
 
     public event EventHandler<RecordingCoordinatorState>? StateChanged;
     public event EventHandler<string>? StatusMessage;
+    public event EventHandler<double>? TranscriptionProgress;
 
     public async Task<MeetingSession> StartAsync(MeetingDetectionResult? detection, CancellationToken ct = default)
     {
@@ -126,6 +130,23 @@ public class RecordingCoordinator : IRecordingCoordinator
         session.EndTime = DateTime.Now;
         session.Status = MeetingSessionStatus.Stopped;
 
+        // Best-effort calendar enrichment — runs after the audio is safely on disk
+        // so a slow Outlook query never delays the user pressing Stop.
+        try
+        {
+            var match = await _calendar.FindMatchAsync(session.StartTime, session.EndTime ?? DateTime.Now, ct);
+            if (match != null)
+            {
+                if (string.Equals(session.Subject, "Untitled Meeting", StringComparison.Ordinal))
+                    session.Subject = match.Subject;
+                session.Organizer ??= match.Organizer;
+                if (session.Attendees.Count == 0 && match.Attendees.Count > 0)
+                    session.Attendees = match.Attendees;
+                session.MeetingUrl ??= match.MeetingUrl;
+            }
+        }
+        catch (Exception ex) { _logger.LogWarning(ex, "Calendar enrichment failed."); }
+
         try { await _metadataWriter.WriteAsync(session, ct); }
         catch (Exception ex) { _logger.LogWarning(ex, "Metadata write on stop failed."); }
 
@@ -153,7 +174,10 @@ public class RecordingCoordinator : IRecordingCoordinator
         try
         {
             var progress = new Progress<TranscriptionProgress>(p =>
-                StatusMessage?.Invoke(this, $"Transcribing: {(int)(p.Fraction * 100)}% — {p.Message}"));
+            {
+                StatusMessage?.Invoke(this, $"Transcribing: {(int)(p.Fraction * 100)}% — {p.Message}");
+                this.TranscriptionProgress?.Invoke(this, p.Fraction);
+            });
 
             var segments = await _transcriber.TranscribeAsync(new TranscriptionRequest
             {
@@ -184,6 +208,21 @@ public class RecordingCoordinator : IRecordingCoordinator
             await _transcriptWriter.WriteMarkdownAsync(session.TranscriptMarkdownPath, session,
                 diar.AnnotatedSegments, diar.Speakers, ct);
 
+            // Index in SQLite so the search view and segment-level history can find them.
+            try
+            {
+                await _sessionStore.ReplaceSegmentsAsync(session.SessionId, diar.AnnotatedSegments, ct);
+                await _sessionStore.ReplaceSpeakersAsync(session.SessionId, diar.Speakers, ct);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "SQLite index update failed (JSON files are still authoritative).");
+            }
+
+            // Optional cleanup: discard raw mic/loop WAVs once we've successfully transcribed.
+            if (!_settings.Current.KeepRawAudio)
+                TryDeleteRawAudio(session);
+
             session.Status = MeetingSessionStatus.AwaitingSpeakerReview;
             try { await _sessionStore.UpdateAsync(session, ct); } catch { }
             Notify(RecordingCoordinatorState.AwaitingSpeakerReview,
@@ -197,6 +236,20 @@ public class RecordingCoordinator : IRecordingCoordinator
         }
 
         return session;
+    }
+
+    private void TryDeleteRawAudio(MeetingSession session)
+    {
+        // Only remove the per-source streams; the combined mix stays as the
+        // canonical record of what was said.
+        foreach (var path in new[] { session.AudioMePath, session.AudioOthersPath })
+        {
+            if (string.IsNullOrEmpty(path) || !File.Exists(path)) continue;
+            try { File.Delete(path); }
+            catch (Exception ex) { _logger.LogWarning(ex, "Could not delete raw audio {Path}", path); }
+        }
+        session.AudioMePath = null;
+        session.AudioOthersPath = null;
     }
 
     private static string? ChooseAudioForTranscription(MeetingSession s)

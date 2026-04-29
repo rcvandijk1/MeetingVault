@@ -15,8 +15,11 @@ public partial class DashboardViewModel : ObservableObject
     private readonly IAudioCaptureService _audio;
     private readonly IPathService _paths;
     private readonly IMeetingSessionStore _sessions;
+    private readonly ISettingsStore _settings;
     private readonly ILogger<DashboardViewModel> _logger;
     private readonly System.Timers.Timer _durationTimer;
+    // Suppresses repeated auto-starts until detection clears once.
+    private bool _autoStartConsumed;
 
     [ObservableProperty] private string detectionStatus = "Idle — no meeting detected";
     [ObservableProperty] private string detectedPlatform = "—";
@@ -29,6 +32,8 @@ public partial class DashboardViewModel : ObservableObject
     [ObservableProperty] private double loopbackLevel;
     [ObservableProperty] private string lastMeetingSummary = "No previous meeting.";
     [ObservableProperty] private MeetingSession? currentSession;
+    [ObservableProperty] private double transcriptionProgress;
+    [ObservableProperty] private bool isTranscribing;
 
     public Action<MeetingSession>? OnSpeakerReviewRequested { get; set; }
 
@@ -38,6 +43,7 @@ public partial class DashboardViewModel : ObservableObject
         IAudioCaptureService audio,
         IPathService paths,
         IMeetingSessionStore sessions,
+        ISettingsStore settings,
         ILogger<DashboardViewModel> logger)
     {
         _coordinator = coordinator;
@@ -45,11 +51,13 @@ public partial class DashboardViewModel : ObservableObject
         _audio = audio;
         _paths = paths;
         _sessions = sessions;
+        _settings = settings;
         _logger = logger;
 
         _detection.DetectionChanged += OnDetectionChanged;
         _coordinator.StateChanged += OnCoordinatorStateChanged;
         _coordinator.StatusMessage += OnCoordinatorStatusMessage;
+        _coordinator.TranscriptionProgress += OnTranscriptionProgress;
         _audio.LevelsChanged += OnLevels;
 
         _durationTimer = new System.Timers.Timer(500) { AutoReset = true };
@@ -144,6 +152,27 @@ public partial class DashboardViewModel : ObservableObject
             DetectionStatus = e.IsMeetingDetected
                 ? $"Meeting detected on {e.Platform} (confidence {(int)(e.Confidence * 100)}%)."
                 : "Idle — no meeting detected";
+
+            // Auto-start: only when the user opted in, the signal is strong, and we
+            // are not already recording. We require detection to drop back to
+            // "not detected" before we'll auto-start a *new* meeting, so leaving and
+            // re-joining a meeting starts a fresh session rather than appending.
+            if (!e.IsMeetingDetected) { _autoStartConsumed = false; return; }
+            if (IsRecording || _autoStartConsumed) return;
+            if (!_settings.Current.AutoStartRecording) return;
+            if (e.Confidence < 0.7) return;
+
+            _autoStartConsumed = true;
+            _ = StartRecording();
+        });
+    }
+
+    private void OnTranscriptionProgress(object? sender, double fraction)
+    {
+        Application.Current.Dispatcher.Invoke(() =>
+        {
+            TranscriptionProgress = Math.Max(0, Math.Min(1, fraction));
+            IsTranscribing = TranscriptionProgress > 0 && TranscriptionProgress < 1;
         });
     }
 
@@ -152,6 +181,14 @@ public partial class DashboardViewModel : ObservableObject
         Application.Current.Dispatcher.Invoke(() =>
         {
             IsRecording = state == RecordingCoordinatorState.Recording;
+            IsTranscribing = state == RecordingCoordinatorState.Transcribing;
+            if (state is RecordingCoordinatorState.AwaitingSpeakerReview
+                       or RecordingCoordinatorState.Completed
+                       or RecordingCoordinatorState.Failed)
+            {
+                TranscriptionProgress = 0;
+                IsTranscribing = false;
+            }
             if (!IsRecording) _durationTimer.Stop();
         });
     }

@@ -21,6 +21,9 @@
         <DataTemplate DataType="{x:Type vm:SettingsViewModel}">
             <views:SettingsView/>
         </DataTemplate>
+        <DataTemplate DataType="{x:Type vm:SearchViewModel}">
+            <views:SearchView/>
+        </DataTemplate>
     </Window.Resources>
 
     <Grid>
@@ -41,6 +44,9 @@
                 <Button Content="Speaker Review" HorizontalContentAlignment="Left" Padding="12,10"
                         Margin="0,0,0,4" Background="Transparent" BorderThickness="0"
                         Command="{Binding ShowSpeakerReviewCommand}"/>
+                <Button Content="Search" HorizontalContentAlignment="Left" Padding="12,10"
+                        Margin="0,0,0,4" Background="Transparent" BorderThickness="0"
+                        Command="{Binding ShowSearchCommand}"/>
                 <Button Content="Settings" HorizontalContentAlignment="Left" Padding="12,10"
                         Margin="0,0,0,4" Background="Transparent" BorderThickness="0"
                         Command="{Binding ShowSettingsCommand}"/>

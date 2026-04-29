@@ -30,6 +30,9 @@ public interface IRecordingCoordinator
 
     event EventHandler<string>? StatusMessage;
 
+    /// <summary>Fraction in [0,1] when transcription is in progress.</summary>
+    event EventHandler<double>? TranscriptionProgress;
+
     Task<MeetingSession> StartAsync(MeetingDetectionResult? detection, CancellationToken ct = default);
 
     Task<MeetingSession> StopAsync(CancellationToken ct = default);

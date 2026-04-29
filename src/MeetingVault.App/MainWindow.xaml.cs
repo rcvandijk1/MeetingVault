@@ -17,11 +17,33 @@ public partial class MainWindow : Window
         DataContext = vm;
         _coordinator = coordinator;
         _paths = paths;
+
+        _coordinator.StateChanged += (_, state) => Dispatcher.Invoke(() => UpdateTrayState(state));
+        UpdateTrayState(_coordinator.State);
+    }
+
+    private void UpdateTrayState(RecordingCoordinatorState state)
+    {
+        // Tooltip reflects whether we are actively recording — the tray icon is the
+        // user's only ambient signal when the window is hidden.
+        var tip = state switch
+        {
+            RecordingCoordinatorState.Recording => "MeetingVault — recording in progress",
+            RecordingCoordinatorState.Transcribing => "MeetingVault — transcribing",
+            RecordingCoordinatorState.AwaitingSpeakerReview => "MeetingVault — speaker review pending",
+            RecordingCoordinatorState.Failed => "MeetingVault — last recording failed",
+            _ => "MeetingVault"
+        };
+        if (TrayIcon != null) TrayIcon.ToolTipText = tip;
+
+        // Title reflects state too so the taskbar entry is informative when restored.
+        Title = state == RecordingCoordinatorState.Recording
+            ? "● MeetingVault — recording"
+            : "MeetingVault";
     }
 
     protected override void OnClosing(CancelEventArgs e)
     {
-        // Minimize to tray instead of exiting; explicit Exit menu actually quits.
         if (App.IsExiting) { base.OnClosing(e); return; }
         e.Cancel = true;
         Hide();

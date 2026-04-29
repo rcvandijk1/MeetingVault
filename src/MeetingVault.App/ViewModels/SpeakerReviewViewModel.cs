@@ -55,6 +55,14 @@ public partial class SpeakerReviewViewModel : ObservableObject
         {
             Speakers.Add(new SpeakerEditModel(s));
         }
+
+        // Populate per-row merge target lists with everyone but self.
+        foreach (var row in Speakers)
+        {
+            row.MergeCandidates.Clear();
+            foreach (var other in Speakers.Where(x => x.SpeakerId != row.SpeakerId))
+                row.MergeCandidates.Add(other);
+        }
     }
 
     [RelayCommand]
@@ -102,6 +110,18 @@ public partial class SpeakerReviewViewModel : ObservableObject
 
             if (!string.IsNullOrEmpty(Session.TranscriptMarkdownPath))
                 await _transcriptWriter.WriteMarkdownAsync(Session.TranscriptMarkdownPath, Session, segs, alive);
+
+            // Mirror the renamed segments + speakers into the SQLite index so the search
+            // results reflect the new names instead of "Unknown Speaker N".
+            try
+            {
+                await _sessions.ReplaceSegmentsAsync(Session.SessionId, segs);
+                await _sessions.ReplaceSpeakersAsync(Session.SessionId, alive);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "SQLite re-index after speaker review failed.");
+            }
         }
 
         // Persist any "save profile" speakers to SpeakerProfiles.
@@ -148,8 +168,10 @@ public partial class SpeakerReviewViewModel : ObservableObject
     private void Merge(SpeakerEditModel? s)
     {
         if (s == null || Speakers.Count < 2) return;
-        // Simplest merge UX: merge into the first other surviving speaker.
-        var target = Speakers.FirstOrDefault(x => x != s && !x.Ignored && string.IsNullOrEmpty(x.MergedIntoSpeakerId));
+        // Use the picked target if the user chose one; otherwise fall back to the first survivor.
+        var target = !string.IsNullOrEmpty(s.SelectedMergeTargetId)
+            ? Speakers.FirstOrDefault(x => x.SpeakerId == s.SelectedMergeTargetId && x != s)
+            : Speakers.FirstOrDefault(x => x != s && !x.Ignored && string.IsNullOrEmpty(x.MergedIntoSpeakerId));
         if (target == null) return;
         s.MergedIntoSpeakerId = target.SpeakerId;
     }
@@ -165,12 +187,14 @@ public partial class SpeakerEditModel : ObservableObject
     public double TotalSpeakingSeconds { get; }
     public string? FirstSeenAt { get; }
     public string? SampleAudioPath { get; }
+    public ObservableCollection<SpeakerEditModel> MergeCandidates { get; } = new();
 
     [ObservableProperty] private string? newName;
     [ObservableProperty] private bool ignored;
     [ObservableProperty] private bool isMe;
     [ObservableProperty] private bool saveProfile;
     [ObservableProperty] private string? mergedIntoSpeakerId;
+    [ObservableProperty] private string? selectedMergeTargetId;
 
     public SpeakerEditModel(Speaker s)
     {

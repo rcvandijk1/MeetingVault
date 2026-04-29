@@ -88,6 +88,11 @@
                 </Grid>
 
                 <StackPanel Grid.Row="2" Margin="0,16,0,0">
+                    <StackPanel Visibility="{Binding IsTranscribing, Converter={StaticResource BoolToVis}}" Margin="0,0,0,12">
+                        <TextBlock Text="Transcription" Style="{StaticResource MutedText}" FontSize="11"/>
+                        <ProgressBar Height="10" Minimum="0" Maximum="1" Value="{Binding TranscriptionProgress, Mode=OneWay}"
+                                     Foreground="#F0B86E" Margin="0,4,0,0"/>
+                    </StackPanel>
                     <TextBlock Text="Last meeting" Style="{StaticResource MutedText}" FontSize="11"/>
                     <TextBlock Text="{Binding LastMeetingSummary}" FontSize="13" Margin="0,4,0,0"/>
                 </StackPanel>
