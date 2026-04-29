@@ -2,6 +2,7 @@ using MeetingVault.Core.Models;
 using MeetingVault.Core.Services;
 using Microsoft.Extensions.Logging;
 using NAudio.CoreAudioApi;
+using NAudio.MediaFoundation;
 using NAudio.Wave;
 
 namespace MeetingVault.Infrastructure.Audio;

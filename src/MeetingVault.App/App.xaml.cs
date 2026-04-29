@@ -1,3 +1,4 @@
+using System.IO;
 using System.Windows;
 using MeetingVault.App.ViewModels;
 using MeetingVault.Core.Services;

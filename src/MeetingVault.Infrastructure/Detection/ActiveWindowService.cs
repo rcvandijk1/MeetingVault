@@ -7,8 +7,8 @@ namespace MeetingVault.Infrastructure.Detection;
 
 public class ActiveWindowService : IActiveWindowService
 {
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", EntryPoint = "GetForegroundWindow")]
+    private static extern IntPtr GetForegroundWindowHandle();
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
@@ -18,7 +18,7 @@ public class ActiveWindowService : IActiveWindowService
 
     public (string ProcessName, string WindowTitle) GetForegroundWindow()
     {
-        var hwnd = GetForegroundWindow();
+        var hwnd = GetForegroundWindowHandle();
         if (hwnd == IntPtr.Zero) return (string.Empty, string.Empty);
 
         var sb = new StringBuilder(512);

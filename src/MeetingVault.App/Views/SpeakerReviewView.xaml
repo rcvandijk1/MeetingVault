@@ -46,11 +46,11 @@
                                         </TextBlock>
                                         <TextBlock>
                                             <Run Text="First seen "/>
-                                            <Run Text="{Binding FirstSeenAt}"/>
+                                            <Run Text="{Binding FirstSeenAt, Mode=OneWay}"/>
                                         </TextBlock>
                                         <TextBlock>
                                             <Run Text="Speaking time "/>
-                                            <Run Text="{Binding TotalSpeakingSeconds, StringFormat='{}{0:F1}s'}"/>
+                                            <Run Text="{Binding TotalSpeakingSeconds, Mode=OneWay, StringFormat='{}{0:F1}s'}"/>
                                         </TextBlock>
                                         <TextBlock Text="{Binding SpeakerId}" Style="{StaticResource MutedText}" FontSize="11"/>
                                     </StackPanel>

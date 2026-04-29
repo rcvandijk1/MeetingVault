@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
+using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using MeetingVault.Core.Models;
@@ -197,7 +198,7 @@ public partial class SpeakerReviewViewModel : ObservableObject
     }
 
     private static string Sanitize(string s)
-        => new(s.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+        => new string(s.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
 }
 
 public partial class SpeakerEditModel : ObservableObject
