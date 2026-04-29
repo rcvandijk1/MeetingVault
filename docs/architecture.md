@@ -62,15 +62,38 @@ TranscribeAsync(session)
   └─ Dashboard navigates to Speaker Review screen
 ```
 
-## Replacing the diarization stub
+## Diarization & cross-meeting recognition
 
-To plug in a real diarization engine (e.g. pyannote.audio via a Python
-sidecar), implement `ISpeakerDiarizationService` and swap the registration in
-`App.xaml.cs`:
+Two `ISpeakerDiarizationService` implementations ship in the box:
 
-```csharp
-services.AddSingleton<ISpeakerDiarizationService, PythonDiarizationService>();
+- `StubSpeakerDiarizationService` — silence-gap heuristic, no recognition.
+- `PythonDiarizationService` — spawns `python meetingvault_diarize.py` and
+  reads a JSON response from stdout. Pyannote diarizes the combined WAV and
+  produces a 192-d voice embedding per speaker. The C# side compares each
+  embedding against `SpeakerProfiles\*.json` and applies the matched name
+  when cosine similarity ≥ `SpeakerMatchThreshold`.
+
+`DiarizationServiceRouter` is the only registration consumers see; it picks
+between the two based on `AppSettings.DiarizationEngine` and falls back to
+the stub if the python path fails.
+
+### Recognition feedback loop
+
+```
+Meeting #1
+  Whisper segments + Pyannote diarization → Speaker { Embedding=[...] }
+  User names speaker "Robert" + saves
+  → SpeakerProfile spk_robert.json with embedding stored under SpeakerProfiles\
+
+Meeting #2
+  Pyannote diarization is given the list of known voiceprints from disk
+  Each new speaker's embedding is compared (cosine) against every profile
+  Best match ≥ threshold → speaker.IsKnown = true, DisplayName = "Robert"
+  Review screen shows "Auto-recognized (NN% match)" — no rename needed
 ```
 
-`PythonDiarizationService` is scaffolded as a placeholder and currently
-throws `NotImplementedException`.
+The sidecar contract is JSON-on-stdin/JSON-on-stdout (see
+`PythonDiarizationService.SidecarRequest/Response` and the docstring in
+`meetingvault_diarize.py`). To plug in a different engine (e.g. SpeechBrain,
+NeMo, AssemblyAI) implement `ISpeakerDiarizationService` and either replace
+`PythonDiarizationService` in DI or extend the router with a new branch.

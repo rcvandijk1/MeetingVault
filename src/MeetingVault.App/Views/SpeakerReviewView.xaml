@@ -31,6 +31,19 @@
                                     </Grid.ColumnDefinitions>
                                     <StackPanel Grid.Column="0">
                                         <TextBlock Text="{Binding OriginalDisplayName}" FontWeight="SemiBold" FontSize="15"/>
+                                        <TextBlock Text="{Binding RecognitionBadge}" FontSize="11" Margin="0,2,0,4">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Foreground" Value="#9AA0AC"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding WasAutoRecognized}" Value="True">
+                                                            <Setter Property="Foreground" Value="#7BD389"/>
+                                                            <Setter Property="FontWeight" Value="SemiBold"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
                                         <TextBlock>
                                             <Run Text="First seen "/>
                                             <Run Text="{Binding FirstSeenAt}"/>

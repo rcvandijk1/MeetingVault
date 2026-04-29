@@ -25,4 +25,11 @@ public class Speaker
     public bool IsMe { get; set; }
 
     public bool Ignored { get; set; }
+
+    /// <summary>
+    /// Voice embedding vector produced by the diarization engine (pyannote /
+    /// SpeechBrain / ECAPA-TDNN). Null when the engine doesn't produce one.
+    /// Used to match the speaker against enrolled <see cref="SpeakerProfile"/>s.
+    /// </summary>
+    public float[]? Embedding { get; set; }
 }

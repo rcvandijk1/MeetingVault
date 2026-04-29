@@ -24,6 +24,15 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string? selectedInputDeviceId;
     [ObservableProperty] private string? selectedOutputDeviceId;
 
+    // Diarization / speaker recognition
+    [ObservableProperty] private string diarizationEngine = "Stub";
+    [ObservableProperty] private string? pythonExecutablePath;
+    [ObservableProperty] private string? huggingFaceToken;
+    [ObservableProperty] private double speakerMatchThreshold = 0.7;
+    [ObservableProperty] private bool enrollVoicesOnSave = true;
+
+    public List<string> DiarizationEngines { get; } = new() { "Stub", "Python" };
+
     public List<DeviceItem> InputDevices { get; } = new();
     public List<DeviceItem> OutputDevices { get; } = new();
 
@@ -49,6 +58,11 @@ public partial class SettingsViewModel : ObservableObject
         KeepRawAudio = s.KeepRawAudio;
         SelectedInputDeviceId = s.DefaultInputDeviceId;
         SelectedOutputDeviceId = s.DefaultOutputDeviceId;
+        DiarizationEngine = string.IsNullOrWhiteSpace(s.DiarizationEngine) ? "Stub" : s.DiarizationEngine;
+        PythonExecutablePath = s.PythonExecutablePath;
+        HuggingFaceToken = s.HuggingFaceToken;
+        SpeakerMatchThreshold = s.SpeakerMatchThreshold;
+        EnrollVoicesOnSave = s.EnrollVoicesOnSave;
     }
 
     private void LoadDevices()
@@ -87,6 +101,11 @@ public partial class SettingsViewModel : ObservableObject
             s.KeepRawAudio = KeepRawAudio;
             s.DefaultInputDeviceId = SelectedInputDeviceId;
             s.DefaultOutputDeviceId = SelectedOutputDeviceId;
+            s.DiarizationEngine = string.IsNullOrWhiteSpace(DiarizationEngine) ? "Stub" : DiarizationEngine;
+            s.PythonExecutablePath = string.IsNullOrWhiteSpace(PythonExecutablePath) ? null : PythonExecutablePath;
+            s.HuggingFaceToken = string.IsNullOrWhiteSpace(HuggingFaceToken) ? null : HuggingFaceToken;
+            s.SpeakerMatchThreshold = Math.Clamp(SpeakerMatchThreshold, 0.0, 1.0);
+            s.EnrollVoicesOnSave = EnrollVoicesOnSave;
         });
         _paths.EnsureFoldersExist();
     }
@@ -117,6 +136,17 @@ public partial class SettingsViewModel : ObservableObject
             var folder = Path.GetDirectoryName(dlg.FileName);
             if (!string.IsNullOrWhiteSpace(folder)) RootFolder = folder;
         }
+    }
+
+    [RelayCommand]
+    private void BrowsePython()
+    {
+        var dlg = new OpenFileDialog
+        {
+            Title = "Select python.exe (with pyannote.audio installed)",
+            Filter = "Python (*.exe)|python.exe;python3.exe|All files (*.*)|*.*"
+        };
+        if (dlg.ShowDialog() == true) PythonExecutablePath = dlg.FileName;
     }
 
     [RelayCommand]

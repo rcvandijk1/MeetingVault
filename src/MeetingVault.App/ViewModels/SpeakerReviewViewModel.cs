@@ -124,17 +124,37 @@ public partial class SpeakerReviewViewModel : ObservableObject
             }
         }
 
-        // Persist any "save profile" speakers to SpeakerProfiles.
-        foreach (var s in Speakers.Where(s => s.SaveProfile && !string.IsNullOrWhiteSpace(s.NewName)))
+        // Persist named speakers as reusable profiles (with voice embeddings
+        // when the engine produced one) so future meetings auto-recognize them.
+        // We enroll a voice when EITHER the user explicitly ticked SaveProfile
+        // OR EnrollVoicesOnSave is true and the speaker now has a real name.
+        var enrollByDefault = _settings.Current.EnrollVoicesOnSave;
+        var enrollees = Speakers.Where(s =>
+            !string.IsNullOrWhiteSpace(s.NewName) &&
+            !s.Ignored &&
+            string.IsNullOrEmpty(s.MergedIntoSpeakerId) &&
+            (s.SaveProfile || enrollByDefault));
+
+        foreach (var s in enrollees)
         {
-            await _profileStore.SaveAsync(new SpeakerProfile
+            var profileId = $"spk_{Sanitize(s.NewName!)}";
+            // Merge with an existing profile if the user has named this person
+            // before — preserves the existing embedding and notes.
+            var existing = await _profileStore.GetAsync(profileId);
+            var profile = existing ?? new SpeakerProfile
             {
-                SpeakerId = $"spk_{Sanitize(s.NewName!)}",
-                DisplayName = s.NewName!.Trim(),
-                CreatedAt = DateTime.UtcNow,
-                UpdatedAt = DateTime.UtcNow,
-                VoiceProfileAvailable = false
-            });
+                SpeakerId = profileId,
+                CreatedAt = DateTime.UtcNow
+            };
+            profile.DisplayName = s.NewName!.Trim();
+            profile.UpdatedAt = DateTime.UtcNow;
+            if (s.Embedding is { Length: > 0 })
+            {
+                profile.Embedding = s.Embedding;
+                profile.EmbeddingModel = "pyannote/embedding";
+                profile.VoiceProfileAvailable = true;
+            }
+            await _profileStore.SaveAsync(profile);
         }
 
         Session.Status = MeetingSessionStatus.Completed;
@@ -187,6 +207,13 @@ public partial class SpeakerEditModel : ObservableObject
     public double TotalSpeakingSeconds { get; }
     public string? FirstSeenAt { get; }
     public string? SampleAudioPath { get; }
+    public float[]? Embedding { get; }
+    public bool WasAutoRecognized { get; }
+    public double RecognitionConfidence { get; }
+    public string RecognitionBadge =>
+        WasAutoRecognized
+            ? $"Auto-recognized ({(int)(RecognitionConfidence * 100)}% match)"
+            : "New speaker — please name";
     public ObservableCollection<SpeakerEditModel> MergeCandidates { get; } = new();
 
     [ObservableProperty] private string? newName;
@@ -204,6 +231,12 @@ public partial class SpeakerEditModel : ObservableObject
         TotalSpeakingSeconds = s.TotalSpeakingSeconds;
         FirstSeenAt = s.FirstSeenAt;
         SampleAudioPath = s.SampleAudioPath;
+        Embedding = s.Embedding;
+        WasAutoRecognized = s.IsKnown;
+        RecognitionConfidence = s.Confidence;
+        // If the diarization engine matched a known voice we default the
+        // SaveProfile flag off — there is already a profile.
+        SaveProfile = false;
     }
 
     public Speaker ToModel(bool forceIgnored = false) => new()
@@ -216,6 +249,7 @@ public partial class SpeakerEditModel : ObservableObject
         TotalSpeakingSeconds = TotalSpeakingSeconds,
         FirstSeenAt = FirstSeenAt,
         SampleAudioPath = SampleAudioPath,
+        Embedding = Embedding,
         MergedIntoSpeakerId = MergedIntoSpeakerId
     };
 }

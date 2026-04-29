@@ -105,7 +105,11 @@ public partial class App : Application
         services.AddSingleton<IMetadataWriter, JsonMetadataWriter>();
         services.AddSingleton<ITranscriptionService, WhisperTranscriptionService>();
         services.AddSingleton<ITranscriptWriter, JsonTranscriptWriter>();
-        services.AddSingleton<ISpeakerDiarizationService, StubSpeakerDiarizationService>();
+        // Both diarization engines are registered so the router can pick at
+        // runtime; the router is the one consumers depend on.
+        services.AddSingleton<StubSpeakerDiarizationService>();
+        services.AddSingleton<PythonDiarizationService>();
+        services.AddSingleton<ISpeakerDiarizationService, DiarizationServiceRouter>();
         services.AddSingleton<ISpeakerStore, JsonSpeakerStore>();
         services.AddSingleton<ISpeakerProfileStore, JsonSpeakerProfileStore>();
         services.AddSingleton<IMeetingSessionStore, SqliteMeetingSessionStore>();

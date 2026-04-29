@@ -7,6 +7,7 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <TextBlock Text="Settings" Style="{StaticResource HeaderText}" Grid.Row="0"/>
@@ -66,6 +67,56 @@
                               IsChecked="{Binding SaveSeparateAudioStreams}"/>
                     <CheckBox Content="Save combined audio (mixed)" IsChecked="{Binding SaveCombinedAudio}"/>
                     <CheckBox Content="Keep raw audio after transcription" IsChecked="{Binding KeepRawAudio}"/>
+
+                    <Button Content="Save Settings" Style="{StaticResource PrimaryButton}"
+                            Command="{Binding SaveCommand}" HorizontalAlignment="Left" Margin="0,16,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <Border Grid.Row="3" Style="{StaticResource Card}" Margin="0,16,0,0">
+                <StackPanel>
+                    <TextBlock Text="Speaker recognition" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <TextBlock Style="{StaticResource MutedText}" FontSize="11" TextWrapping="Wrap"
+                               Text="Diarization splits a meeting into per-speaker turns. The Python engine (pyannote.audio) also produces voice embeddings; once you name a speaker in the review screen, MeetingVault stores their voiceprint and auto-recognizes them in future meetings."
+                               Margin="0,0,0,12"/>
+
+                    <TextBlock Text="Engine"/>
+                    <ComboBox ItemsSource="{Binding DiarizationEngines}"
+                              SelectedItem="{Binding DiarizationEngine}" Margin="0,2,0,12"/>
+
+                    <TextBlock Text="Python executable (python.exe with pyannote.audio installed)"/>
+                    <Grid Margin="0,2,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0" Text="{Binding PythonExecutablePath, UpdateSourceTrigger=PropertyChanged}"/>
+                        <Button Grid.Column="1" Content="Browse" Command="{Binding BrowsePythonCommand}" Margin="8,0,0,0"/>
+                    </Grid>
+
+                    <TextBlock Text="Hugging Face access token (required for pyannote diarization model download)"/>
+                    <PasswordBox x:Name="HfTokenBox" Margin="0,2,0,4"
+                                 Background="#1A1C22" Foreground="{StaticResource ForegroundBrush}"
+                                 BorderBrush="{StaticResource BorderBrush}" Padding="6,4"
+                                 PasswordChanged="HfTokenBox_PasswordChanged"/>
+                    <TextBlock Style="{StaticResource MutedText}" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"
+                               Text="Get a token at huggingface.co/settings/tokens and accept the model conditions at huggingface.co/pyannote/speaker-diarization-3.1." />
+
+                    <TextBlock Text="Voice match threshold (cosine similarity)"/>
+                    <Grid Margin="0,2,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Slider Grid.Column="0" Minimum="0.5" Maximum="0.95" SmallChange="0.01" LargeChange="0.05"
+                                TickFrequency="0.05" IsSnapToTickEnabled="False"
+                                Value="{Binding SpeakerMatchThreshold}"/>
+                        <TextBlock Grid.Column="1" Text="{Binding SpeakerMatchThreshold, StringFormat={}{0:F2}}"
+                                   VerticalAlignment="Center" Width="40" Margin="8,0,0,0" TextAlignment="Right"/>
+                    </Grid>
+
+                    <CheckBox Content="Auto-enroll voices when I name a speaker"
+                              IsChecked="{Binding EnrollVoicesOnSave}"/>
 
                     <Button Content="Save Settings" Style="{StaticResource PrimaryButton}"
                             Command="{Binding SaveCommand}" HorizontalAlignment="Left" Margin="0,16,0,0"/>
