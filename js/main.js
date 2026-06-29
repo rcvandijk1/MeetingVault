@@ -35,6 +35,22 @@ eventSystem.setCamera(camera);
 
 let inhabitants = [];
 
+// ── Night vision ───────────────────────────────────────────────────────────
+let nightscope = false;
+const _canvas   = () => renderer.domElement;
+const _nvBadge  = () => document.getElementById('nv-badge');
+
+function setNightscope(on) {
+  nightscope = on;
+  _canvas().classList.toggle('nightscope', on);
+  const badge = _nvBadge();
+  if (badge) badge.classList.toggle('active', on);
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'n' || e.key === 'N') setNightscope(!nightscope);
+});
+
 // ── Genesis state ──────────────────────────────────────────────────────────
 let genesisMode    = false;
 let chunkManager   = null;
@@ -165,19 +181,28 @@ function _clearWorld() {
 
 // ── UI ─────────────────────────────────────────────────────────────────────
 const systems = {
-  weather:     weatherSystem,
-  events:      eventSystem,
-  time:        timeSystem,
-  inhabitants: () => inhabitants,
-  isGenesis:   () => genesisMode,
-  chunkManager:() => chunkManager,
-  maxGeneration:()  => maxGeneration,
+  weather:      weatherSystem,
+  events:       eventSystem,
+  time:         timeSystem,
+  inhabitants:  () => inhabitants,
+  isGenesis:    () => genesisMode,
+  chunkManager: () => chunkManager,
+  maxGeneration:() => maxGeneration,
+  nightscope:   () => nightscope,
+  toggleNightscope: () => setNightscope(!nightscope),
 };
-const ui = buildUI(systems, eraManager, (eraId) => {
-  if (eraId === 'genesis') { loadGenesis(); }
-  else                     { loadEra(eraId); }
-  ui.rerender?.();
-});
+const ui = buildUI(systems, eraManager,
+  (eraId) => {
+    if (eraId === 'genesis') { loadGenesis(); }
+    else                     { loadEra(eraId); }
+    ui.rerender?.();
+  },
+  (disasterId) => {
+    // Auto night-vision on blackout, auto-off on clear
+    if (disasterId === 'power_outage') setNightscope(true);
+    if (disasterId === '__clear__')    setNightscope(false);
+  }
+);
 
 // ── Raycasting ─────────────────────────────────────────────────────────────
 const raycaster = new THREE.Raycaster();
@@ -300,7 +325,7 @@ function animate() {
     _selectionRing.position.set(selectedInhabitant.pos.x,0.05,selectedInhabitant.pos.z);
   }
 
-  updateLighting(timeSystem, weatherSystem.current);
+  updateLighting(timeSystem, weatherSystem.current, nightscope);
 
   if (frameCount%10===0) {
     ui.updateTime(timeSystem);

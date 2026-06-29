@@ -69,25 +69,41 @@ export function setupScene(container) {
   const stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xffffff, size: 0.4 }));
   scene.add(stars);
 
-  function updateLighting(timeSystem, weather) {
+  function updateLighting(timeSystem, weather, nightscope) {
     const sky = timeSystem.skyColor;
     const isNight = timeSystem.isNight;
-    scene.background.setRGB(
-      weather === 'storm' ? sky.r * 0.4 : sky.r,
-      weather === 'storm' ? sky.g * 0.4 : sky.g,
-      weather === 'storm' ? sky.b * 0.4 : sky.b
-    );
 
-    const h = timeSystem.hour + timeSystem.minute / 60;
-    const sunIntensity = Math.max(0, Math.sin(((h - 6) / 14) * Math.PI)) * 1.2;
-    sun.intensity = sunIntensity * (weather === 'storm' ? 0.1 : weather === 'cloudy' ? 0.4 : 1);
-    ambient.intensity = 0.25 + sunIntensity * 0.4;
-    moonLight.intensity = isNight ? 0.15 : 0.0;
-    stars.visible = isNight;
+    if (nightscope) {
+      // Night vision: dark scene with green-cast ambient — CSS filter does the rest
+      scene.background.setRGB(0.01, 0.04, 0.01);
+      scene.fog.color.setRGB(0.01, 0.04, 0.01);
+      ambient.intensity = 0.75;
+      ambient.color.setHex(0x103010);
+      sun.intensity = 0.05;
+      moonLight.intensity = 0.55;
+      moonLight.color.setHex(0x103010);
+      stars.visible = true;
+    } else {
+      // Normal lighting
+      scene.background.setRGB(
+        weather === 'storm' ? sky.r * 0.4 : sky.r,
+        weather === 'storm' ? sky.g * 0.4 : sky.g,
+        weather === 'storm' ? sky.b * 0.4 : sky.b
+      );
+      scene.fog.color.copy(scene.background);
+      ambient.color.setHex(0x404060);
+      moonLight.color.setHex(0x2244aa);
 
-    // Sun orbit
-    const angle = (h / 24) * Math.PI * 2 - Math.PI / 2;
-    sun.position.set(Math.cos(angle) * 60, Math.sin(angle) * 60, 20);
+      const h = timeSystem.hour + timeSystem.minute / 60;
+      const sunIntensity = Math.max(0, Math.sin(((h - 6) / 14) * Math.PI)) * 1.2;
+      sun.intensity = sunIntensity * (weather === 'storm' ? 0.1 : weather === 'cloudy' ? 0.4 : 1);
+      ambient.intensity = 0.25 + sunIntensity * 0.4;
+      moonLight.intensity = isNight ? 0.15 : 0.0;
+      stars.visible = isNight;
+
+      const angle = (h / 24) * Math.PI * 2 - Math.PI / 2;
+      sun.position.set(Math.cos(angle) * 60, Math.sin(angle) * 60, 20);
+    }
   }
 
   function onResize() {

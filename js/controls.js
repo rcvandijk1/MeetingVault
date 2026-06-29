@@ -1,5 +1,6 @@
-export function buildUI(systems, eraManager, onEraSwitch) {
-  const { weather, events, time, inhabitants, isGenesis, chunkManager, maxGeneration } = systems;
+export function buildUI(systems, eraManager, onEraSwitch, onDisasterCallback) {
+  const { weather, events, time, inhabitants, isGenesis, chunkManager, maxGeneration,
+          nightscope, toggleNightscope } = systems;
   const panel = document.getElementById('controls');
 
   function renderEraButtons() {
@@ -95,6 +96,16 @@ export function buildUI(systems, eraManager, onEraSwitch) {
       </div>
 
       <div class="section">
+        <div class="section-title">👁 View</div>
+        <div class="btn-grid" style="grid-template-columns:1fr">
+          <button id="nv-toggle" class="${nightscope?.() ? 'active' : ''}"
+            style="${nightscope?.() ? 'background:rgba(0,180,60,0.25);border-color:#00cc44;color:#00ff66' : ''}">
+            🔭 Night Vision ${nightscope?.() ? 'ON' : 'OFF'} <span style="color:#666;font-size:9px">[N]</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="section">
         <div class="section-title">📋 Village Log</div>
         <div id="event-label" class="event-label"></div>
         <div id="trades" class="trades"></div>
@@ -130,11 +141,18 @@ export function buildUI(systems, eraManager, onEraSwitch) {
       btn.addEventListener('click', () => {
         events.triggerDisaster(btn.dataset.d, systems.inhabitants());
         document.getElementById('event-label').textContent=events.eventLabel;
+        onDisasterCallback?.(btn.dataset.d);
       });
     });
     document.getElementById('clear-disaster')?.addEventListener('click', () => {
       events.clearAll(systems.inhabitants());
       document.getElementById('event-label').textContent='';
+      onDisasterCallback?.('__clear__');
+    });
+
+    document.getElementById('nv-toggle')?.addEventListener('click', () => {
+      toggleNightscope?.();
+      render(); // refresh button state
     });
 
     panel.querySelectorAll('.s-btn').forEach(btn => {
