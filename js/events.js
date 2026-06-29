@@ -40,7 +40,7 @@ export class EventSystem {
         this._shakeTime = 8;
         inhabitants.forEach(i => { i.setOverride('cowering'); i.mood = Math.max(0, i.mood - 0.2); }); break;
       case 'plague':
-        this._applyPlague(inhabitants, 0.88aa44); break;
+        this._applyPlague(inhabitants, 0x88aa44); break;
       // Stone Age
       case 'predator':
         inhabitants.forEach(i => { i.setOverride('fleeing'); this._setFleeAway(i); i.mood -= 0.3; }); break;
