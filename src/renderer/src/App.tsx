@@ -3,6 +3,7 @@ import { CollapsibleHeader } from './components/CollapsibleHeader'
 import { TabBar } from './components/TabBar'
 import { AgentTerminal } from './components/AgentTerminal'
 import { TerminalErrorBoundary } from './components/TerminalErrorBoundary'
+import { useTheme, type Theme } from './useTheme'
 import type { Tab } from './types'
 
 function readStandaloneTab(): Tab | null {
@@ -48,7 +49,12 @@ function nextTabId(): string {
   return `tab-${Date.now()}-${tabCounter}`
 }
 
-function MainWindow(): JSX.Element {
+type MainWindowProps = {
+  theme: Theme
+  onToggleTheme: () => void
+}
+
+function MainWindow({ theme, onToggleTheme }: MainWindowProps): JSX.Element {
   const [tabs, setTabs] = useState<Tab[]>([])
   const [activeTabId, setActiveTabId] = useState<string | null>(null)
 
@@ -86,7 +92,7 @@ function MainWindow(): JSX.Element {
 
   return (
     <div className="watcher-app">
-      <CollapsibleHeader tabCount={tabs.length} />
+      <CollapsibleHeader tabCount={tabs.length} theme={theme} onToggleTheme={onToggleTheme} />
       <TabBar
         tabs={tabs}
         activeTabId={activeTabId}
@@ -114,5 +120,10 @@ function MainWindow(): JSX.Element {
 
 export function App(): JSX.Element {
   const standaloneTab = useMemo(readStandaloneTab, [])
-  return standaloneTab ? <StandaloneTabWindow tab={standaloneTab} /> : <MainWindow />
+  const [theme, toggleTheme] = useTheme()
+  return standaloneTab ? (
+    <StandaloneTabWindow tab={standaloneTab} />
+  ) : (
+    <MainWindow theme={theme} onToggleTheme={toggleTheme} />
+  )
 }
