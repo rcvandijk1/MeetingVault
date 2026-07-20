@@ -68,7 +68,7 @@ body {
 .watcher-header {
   --bar-h: 64px;
   position: relative;
-  height: 220px;
+  height: 160px;
   flex-shrink: 0;
   overflow: hidden;
   border-bottom: 1px solid var(--border);
@@ -83,15 +83,21 @@ body {
 
 .watcher-header__art {
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Stops above the bar rather than running the full header height — the bar's
+     translucent background would otherwise wash out whatever art falls behind it. */
+  height: calc(100% - var(--bar-h));
   background-image: var(--header-art-image), var(--header-art-fallback);
-  background-size: cover;
-  background-position: center top;
+  /* `contain` (not `cover`) so the whole image is always visible — the header is much
+     wider than it is tall, and `cover` zoomed in until width was filled, cropping
+     everything below the hairline. */
+  background-size: contain;
+  background-position: center bottom;
   background-repeat: no-repeat;
-  mask-image: linear-gradient(to bottom, black 55%, transparent 92%);
-  -webkit-mask-image: linear-gradient(to bottom, black 55%, transparent 92%);
   opacity: 1;
-  transition: opacity 200ms ease;
+  transition: opacity 200ms ease, height 220ms ease;
   pointer-events: none;
 }
 
