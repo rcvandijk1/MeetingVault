@@ -1,0 +1,440 @@
+:root {
+  color-scheme: dark;
+  --bg: #0d0f14;
+  --bg-raised: #131722;
+  --bg-tab: #10131b;
+  --border: #232838;
+  --text: #c9d1d9;
+  --text-dim: #7d8598;
+  --accent: #6e56cf;
+  --header-bar-bg: rgba(19, 23, 34, 0.88);
+  --header-art-image: url('/artwork/header-dark.jpg');
+  --header-art-fallback: linear-gradient(180deg, #05060a 0%, #0d0f14 100%);
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f5f6f8;
+  --bg-raised: #ffffff;
+  --bg-tab: #eceef2;
+  --border: #dde1e8;
+  --text: #1c2029;
+  --text-dim: #6b7280;
+  --accent: #6e56cf;
+  --header-bar-bg: rgba(255, 255, 255, 0.88);
+  --header-art-image: url('/artwork/header-light.jpg');
+  --header-art-fallback: linear-gradient(180deg, #e9eaee 0%, #f5f6f8 100%);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, 'Segoe UI', Inter, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+.watcher-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.watcher-app--standalone {
+  padding-top: 36px;
+  position: relative;
+}
+
+.standalone-drag {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 36px;
+}
+
+/* Header */
+
+.watcher-header {
+  --bar-h: 64px;
+  position: relative;
+  height: 160px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  transition: height 220ms ease;
+  -webkit-app-region: drag;
+}
+
+.watcher-header--collapsed {
+  --bar-h: 34px;
+  height: 34px;
+}
+
+.watcher-header__art {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  /* Stops above the bar rather than running the full header height — the bar's
+     translucent background would otherwise wash out whatever art falls behind it. */
+  height: calc(100% - var(--bar-h));
+  background-image: var(--header-art-image), var(--header-art-fallback);
+  /* `contain` (not `cover`) so the whole image is always visible — the header is much
+     wider than it is tall, and `cover` zoomed in until width was filled, cropping
+     everything below the hairline. */
+  background-size: contain;
+  background-position: center bottom;
+  background-repeat: no-repeat;
+  opacity: 1;
+  transition: opacity 200ms ease, height 220ms ease;
+  pointer-events: none;
+}
+
+.watcher-header--collapsed .watcher-header__art {
+  opacity: 0;
+}
+
+.watcher-header__bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--bar-h);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 150px 0 16px;
+  background: var(--header-bar-bg);
+  backdrop-filter: blur(6px);
+  transition: height 220ms ease, padding 220ms ease;
+}
+
+.watcher-header__drag {
+  position: absolute;
+  inset: 0;
+  -webkit-app-region: drag;
+}
+
+.watcher-header__content {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  z-index: 1;
+  -webkit-app-region: no-drag;
+  pointer-events: none;
+}
+
+.watcher-header__status {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding-top: 2px;
+}
+
+.watcher-logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.watcher-logo__wordmark {
+  display: flex;
+  flex-direction: column;
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  line-height: 1.1;
+}
+
+.watcher-logo__tagline {
+  font-weight: 400;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  text-transform: none;
+}
+
+.watcher-header__controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 1;
+  -webkit-app-region: no-drag;
+}
+
+.watcher-header__icon-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.watcher-header__icon-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Tab bar */
+
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  background: var(--bg-tab);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  min-height: 38px;
+  overflow-x: auto;
+}
+
+.tab-bar__tabs {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+}
+
+.tab-bar__tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-top: 2px solid transparent;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  max-width: 220px;
+}
+
+.tab-bar__tab--active {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.tab-bar__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tab-bar__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tab-bar__icon-btn {
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.55;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px;
+}
+
+.tab-bar__icon-btn:hover {
+  opacity: 1;
+}
+
+.tab-bar__add {
+  flex-shrink: 0;
+  width: 36px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.tab-bar__add:hover {
+  color: var(--text);
+  background: var(--bg-raised);
+}
+
+/* Workspace */
+
+.watcher-workspace {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.agent-terminal {
+  position: absolute;
+  inset: 0;
+  padding: 8px;
+}
+
+.watcher-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-dim);
+  gap: 4px;
+  text-align: center;
+}
+
+.watcher-empty-state__hint {
+  font-size: 12.5px;
+  max-width: 340px;
+}
+
+.agent-terminal--error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 6px;
+  color: #e5534b;
+  text-align: center;
+}
+
+.agent-terminal--error__detail {
+  font-size: 12px;
+  color: var(--text-dim);
+  max-width: 420px;
+}
+
+/* Agent picker */
+
+.agent-picker__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 90px;
+  z-index: 10;
+}
+
+.agent-picker {
+  width: 340px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.agent-picker__heading {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 6px 8px;
+}
+
+.agent-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-picker__item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 6px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.agent-picker__item:hover {
+  background: var(--bg);
+}
+
+.agent-picker__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.agent-picker__item-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.agent-picker__item-name {
+  font-size: 13px;
+}
+
+.agent-picker__item-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.agent-picker__custom {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 6px;
+}
+
+.agent-picker__custom input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.agent-picker__custom-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.agent-picker__custom-actions button {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12.5px;
+}
+
+.agent-picker__custom-actions button[type='submit'] {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.agent-picker__custom-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
