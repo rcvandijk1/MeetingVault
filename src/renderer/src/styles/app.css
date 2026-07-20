@@ -242,6 +242,23 @@ body {
   max-width: 340px;
 }
 
+.agent-terminal--error {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  gap: 6px;
+  color: #e5534b;
+  text-align: center;
+}
+
+.agent-terminal--error__detail {
+  font-size: 12px;
+  color: var(--text-dim);
+  max-width: 420px;
+}
+
 /* Agent picker */
 
 .agent-picker__backdrop {

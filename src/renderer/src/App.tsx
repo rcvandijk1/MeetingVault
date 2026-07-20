@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { CollapsibleHeader } from './components/CollapsibleHeader'
 import { TabBar } from './components/TabBar'
 import { AgentTerminal } from './components/AgentTerminal'
+import { TerminalErrorBoundary } from './components/TerminalErrorBoundary'
 import type { Tab } from './types'
 
 function readStandaloneTab(): Tab | null {
@@ -34,7 +35,9 @@ function StandaloneTabWindow({ tab }: { tab: Tab }): JSX.Element {
   return (
     <div className="watcher-app watcher-app--standalone">
       <div className="watcher-header__drag standalone-drag" />
-      <AgentTerminal tab={tab} visible />
+      <TerminalErrorBoundary agentName={tab.title}>
+        <AgentTerminal tab={tab} visible />
+      </TerminalErrorBoundary>
     </div>
   )
 }
@@ -100,7 +103,9 @@ function MainWindow(): JSX.Element {
           </div>
         )}
         {tabs.map((tab) => (
-          <AgentTerminal key={tab.id} tab={tab} visible={tab.id === activeTabId} />
+          <TerminalErrorBoundary key={tab.id} agentName={tab.title}>
+            <AgentTerminal tab={tab} visible={tab.id === activeTabId} />
+          </TerminalErrorBoundary>
         ))}
       </div>
     </div>
