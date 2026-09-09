@@ -216,6 +216,32 @@ flights within `VERIFY_CACHE_MINUTES` is reused instead of walking the flow agai
 `VERIFY_DATA_DIR` (default `packages/server/data/verifications`). Chromium comes from `PLAYWRIGHT_CHROMIUM_PATH` or
 `npx playwright install chromium`.
 
+## Flight class for every flight
+
+A profile carries the **classes to search** (any set of Economy, Premium economy, Business, First — each is searched,
+scored, Pareto-analysed and baselined as its own group) and a **minimum class for feeder / short-haul flights**.
+Long-haul segments must be in the searched class; a feeder below the minimum is rejected as a hard constraint.
+Set the minimum equal to the searched class to require it on every flight.
+
+## Booking-flow price verification
+
+After every search the top `VERIFY_TOP_N` journeys are queued for asynchronous verification. A driver walks the
+selling channel's booking process **up to the payment page and never through it**, records the final total, the
+price breakdown and a screenshot of every step, and the verified price feeds back into the true journey cost
+(`bookingFees`) and the run's scores. Verification follows the ranking (a promoted journey is queued too),
+identical flights verified within `VERIFY_CACHE_MINUTES` are reused, interrupted jobs recover on restart, and any
+journey can be checked on demand from its detail panel.
+
+| Driver | Kind | Channel |
+| --- | --- | --- |
+| `mock-airline` | headless Chromium (Playwright) | the self-hosted reference airline site at `/mock-airline` |
+| `api-pricing` | pricing API | Duffel / Amadeus offers (the pricing call is the step before payment) |
+
+Real airline websites need a driver each (`packages/server/src/verification/drivers`), written against the live
+site. Expect bot detection, captchas and DOM changes; a broken driver shows as `FAILED` with the failing step and
+screenshot rather than a wrong price. Screenshots are stored under `VERIFY_DATA_DIR`
+(default `packages/server/data/verifications`). Nothing is ever booked or paid.
+
 ## Background searching & alerts
 
 `SCHEDULER_ENABLED=true` runs the default profile every `SCHEDULER_INTERVAL_HOURS`, stores observations and sends a
