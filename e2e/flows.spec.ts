@@ -23,6 +23,9 @@ test.describe('Krabi Flight Radar', () => {
     await expect(page).toHaveURL(/\/profiles\/new/);
     await page.getByTestId('profile-name').fill(name);
     await page.getByTestId('profile-passengers').fill('1');
+    // Select the class for every flight: search economy and business, require business on feeders too.
+    await page.getByTestId('chip-ECONOMY').click();
+    await page.getByTestId('profile-feeder-cabin').selectOption('BUSINESS');
     await page.getByTestId('profile-save').click();
     await expect(page.getByTestId('profile-status')).toHaveText(/saved/i);
     await expect(page).toHaveURL(/\/profiles\/(?!new)[^/]+$/);
@@ -35,6 +38,9 @@ test.describe('Krabi Flight Radar', () => {
     await expect(page.getByTestId('profile-status')).toHaveText(/saved/i);
 
     await page.reload();
+    await expect(page.getByTestId('chip-ECONOMY')).toHaveClass(/on/);
+    await expect(page.getByTestId('chip-BUSINESS')).toHaveClass(/on/);
+    await expect(page.getByTestId('profile-feeder-cabin')).toHaveValue('BUSINESS');
     await page.getByTestId('tab-constraints').click();
     await expect(page.getByTestId('return-maxIndividualLayoverMinutes')).toHaveValue('150');
     await expect(page.getByTestId('outbound-maxIndividualLayoverMinutes')).toHaveValue('240');
@@ -160,6 +166,33 @@ test.describe('Krabi Flight Radar', () => {
     await expect(drawer).toBeHidden();
   });
 
+  test('verifies the final price by walking the booking flow up to payment', async ({ page }) => {
+    test.setTimeout(180000);
+    await runSearchAndOpenResults(page);
+    // The top journeys are checked asynchronously in the background after the search.
+    const cell = page.getByTestId('result-row').first().getByTestId('row-final-price');
+    await expect(cell).toHaveAttribute('data-status', 'VERIFIED', { timeout: 90000 });
+    await expect(cell).toContainText('€');
+    await page.getByTestId('result-row').first().click();
+    const drawer = page.getByTestId('journey-drawer');
+    await expect(drawer.getByTestId('verification-status')).toHaveText('VERIFIED');
+    await expect(drawer.getByTestId('verification-final')).toContainText('€');
+    // Five booking steps when walked live, one "reuse" step when the same flights were verified recently.
+    await expect(drawer.getByTestId('verification-step').first()).toBeVisible();
+    await expect(drawer.getByTestId('detail-booking-fees')).toBeVisible();
+    if ((await drawer.getByTestId('verification-screenshot').count()) > 0) {
+      await drawer.getByTestId('verification-screenshot').last().click();
+      await expect(drawer.getByTestId('verification-screenshot-img')).toBeVisible();
+    }
+    await page.getByTestId('drawer-close').click();
+
+    // Any journey can be checked on demand.
+    await page.getByTestId('result-row').nth(4).click();
+    const drawer2 = page.getByTestId('journey-drawer');
+    await drawer2.getByTestId('verify-now').click();
+    await expect(drawer2.getByTestId('verification-status')).toHaveText('VERIFIED', { timeout: 60000 });
+  });
+
   test('compares journeys side by side', async ({ page }) => {
     await runSearchAndOpenResults(page);
     const rows = page.getByTestId('result-row');
@@ -200,6 +233,7 @@ test.describe('Krabi Flight Radar', () => {
 
     await page.getByTestId('tab-providers').click();
     await expect(page.getByTestId('providers-card')).toContainText('mock');
+    await expect(page.getByTestId('verification-card')).toContainText('mock-airline');
 
     await page.goto('/history');
     await expect(page.getByTestId('history-summary')).toContainText('KBV');

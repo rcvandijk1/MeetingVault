@@ -16,3 +16,4 @@ packages/server/dist/
 packages/core/dist/
 *.tsbuildinfo
 .scratch/
+packages/server/data/

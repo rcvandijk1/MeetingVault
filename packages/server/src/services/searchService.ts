@@ -10,6 +10,7 @@ import {
   type ScoredJourney,
   type SearchOrchestrator,
   type TripProfile,
+  type VerifiedFare,
 } from '@kfr/core';
 import type { Repositories, SearchRunDetail } from '../repositories/index.js';
 
@@ -26,6 +27,8 @@ export interface SearchServiceDeps {
   log?: { info: (o: unknown, msg?: string) => void; warn: (o: unknown, msg?: string) => void; error: (o: unknown, msg?: string) => void };
   /** Number of top-ranked journeys to re-price with their provider before presenting them (0 disables). */
   repriceTopN?: number;
+  /** Called after a run has been persisted (used to queue booking-flow price verification). */
+  onSearchCompleted?: (outcome: SearchOutcome) => Promise<void>;
 }
 
 /** Days of observation history used as the deal-intelligence reference. */
@@ -33,8 +36,11 @@ export const HISTORY_WINDOW_DAYS = 120;
 
 export class SearchService {
   private readonly now: () => Date;
+  /** Assignable after construction so the verification worker can be wired without a circular dependency. */
+  public onSearchCompleted: SearchServiceDeps['onSearchCompleted'];
   constructor(private readonly deps: SearchServiceDeps) {
     this.now = deps.now ?? (() => new Date());
+    this.onSearchCompleted = deps.onSearchCompleted;
   }
 
   async resolveProfile(profileId?: string, overrides?: Partial<TripProfile>): Promise<TripProfile> {
@@ -87,7 +93,15 @@ export class SearchService {
       if (search.failures.length > 0) this.deps.log?.warn({ runId, failures: search.failures.length }, 'search completed with provider failures');
       const run = (await this.deps.repos.getRun(runId))!;
       const journeys = await this.deps.repos.getRunJourneys(runId);
-      return { run, journeys, result };
+      const outcome = { run, journeys, result };
+      if (this.onSearchCompleted) {
+        try {
+          await this.onSearchCompleted(outcome);
+        } catch (e) {
+          this.deps.log?.warn({ runId, err: e instanceof Error ? e.message : String(e) }, 'post-search hook failed');
+        }
+      }
+      return outcome;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       await this.deps.repos.finishRun(runId, { status: 'FAILED', finishedAt: this.now(), error: message });
@@ -136,6 +150,28 @@ export class SearchService {
     return rescored;
   }
 
+  /**
+   * Re-runs the pipeline of the run an itinerary belongs to, with that itinerary
+   * replaced by `patch(stored)`. Database ids stay stable. Used after re-pricing
+   * and after booking-flow verification so scores follow the real price.
+   */
+  async rerunForItinerary(itineraryId: string, patch: (stored: NormalizedItinerary) => NormalizedItinerary): Promise<ScoredJourney | null> {
+    const runId = await this.deps.repos.getItineraryRunId(itineraryId);
+    const run = runId ? await this.deps.repos.getRun(runId) : null;
+    if (!run || !runId) return null;
+    const journeys = await this.deps.repos.getRunJourneys(runId);
+    const normalized = journeys.map((j) => (j.itinerary.id === itineraryId ? patch(j.itinerary) : j.itinerary));
+    const ctx = await this.buildContext(run.profileSnapshot);
+    const result = runPipeline(normalized, ctx);
+    await this.deps.repos.updateRunScores(runId, result.journeys, this.now());
+    return this.deps.repos.getJourney(itineraryId);
+  }
+
+  /** Records the verified final price on the itinerary and re-scores its run. */
+  async applyVerifiedFare(itineraryId: string, verifiedFare: VerifiedFare): Promise<ScoredJourney | null> {
+    return this.rerunForItinerary(itineraryId, (it) => ({ ...it, verifiedFare }));
+  }
+
   /** Re-prices one itinerary with its provider, records the observation and re-runs the run's pipeline. */
   async refreshItinerary(itineraryId: string): Promise<{ journey: ScoredJourney; refreshed: boolean; error: string | null }> {
     const stored = await this.deps.repos.getJourney(itineraryId);
@@ -145,10 +181,8 @@ export class SearchService {
     const { itinerary: fresh, failure } = await this.deps.orchestrator.refresh(stored.itinerary, { fxRatesToEur: settings.home.fxRatesToEur, now: nowIso });
     if (!fresh) return { journey: stored, refreshed: false, error: failure?.error ?? 'Provider does not support refreshing this offer' };
 
-    // Find the run this itinerary belongs to and re-run the pipeline with the refreshed fare.
-    const runId = await this.findRunIdForItinerary(itineraryId);
-    const run = runId ? await this.deps.repos.getRun(runId) : null;
-    if (!run || !runId) return { journey: stored, refreshed: false, error: 'Search run for itinerary not found' };
+    const runId = await this.deps.repos.getItineraryRunId(itineraryId);
+    if (!runId) return { journey: stored, refreshed: false, error: 'Search run for itinerary not found' };
     await this.deps.repos.addObservation({
       observedAt: nowIso,
       originAirport: fresh.originAirport,
@@ -164,32 +198,8 @@ export class SearchService {
       itineraryFingerprint: fresh.fingerprint,
       searchRunId: runId,
     });
-    const journeys = await this.deps.repos.getRunJourneys(runId);
-    const normalized = journeys.map((j) =>
-      j.itinerary.id === itineraryId
-        ? { ...fresh, id: itineraryId, firstSeen: j.itinerary.firstSeen, lastSeen: nowIso, lastValidated: nowIso, alternatives: j.itinerary.alternatives }
-        : j.itinerary,
-    );
-    const ctx = await this.buildContext(run.profileSnapshot);
-    const result = runPipeline(normalized, ctx);
-    // Keep database ids stable: the pipeline preserves itinerary ids because we fed it stored ids.
-    await this.deps.repos.updateRunScores(runId, result.journeys, this.now());
-    const journey = (await this.deps.repos.getJourney(itineraryId)) ?? stored;
+    const journey =
+      (await this.rerunForItinerary(itineraryId, (it) => ({ ...fresh, id: itineraryId, firstSeen: it.firstSeen, lastSeen: nowIso, lastValidated: nowIso, alternatives: it.alternatives, verifiedFare: it.verifiedFare ?? null }))) ?? stored;
     return { journey, refreshed: true, error: null };
-  }
-
-  private async findRunIdForItinerary(itineraryId: string): Promise<string | null> {
-    const j = await this.deps.repos.getJourney(itineraryId);
-    if (!j) return null;
-    // The itinerary row carries its run id; expose it through a lightweight query.
-    const runs = await this.deps.repos.listRuns(200);
-    for (const r of runs) {
-      const js = await this.deps.repos.getJourneys([itineraryId]);
-      if (js.length) {
-        const found = (await this.deps.repos.getRunJourneys(r.id)).some((x) => x.itinerary.id === itineraryId);
-        if (found) return r.id;
-      }
-    }
-    return null;
   }
 }

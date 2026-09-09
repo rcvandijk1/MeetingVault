@@ -25,4 +25,5 @@ process.on('SIGINT', () => void shutdown());
 process.on('SIGTERM', () => void shutdown());
 
 await app.listen({ port: config.PORT, host: config.HOST });
-app.log.info({ providers: config.providers, scheduler: config.SCHEDULER_ENABLED }, 'Krabi Flight Radar API ready');
+await deps.verifier.recover();
+app.log.info({ providers: config.providers, scheduler: config.SCHEDULER_ENABLED, verification: config.VERIFY_ENABLED }, 'Krabi Flight Radar API ready');

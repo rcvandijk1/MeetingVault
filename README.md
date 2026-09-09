@@ -21,7 +21,7 @@ True journey cost                €1,905
 | Layer | Technology |
 | --- | --- |
 | `packages/core` | TypeScript domain engine (no framework): normalisation, hard constraints, enrichment, scoring, Pareto, deal intelligence, providers, orchestrator. Runs in Node **and** the browser. |
-| `packages/server` | Node 20+, Fastify 5, Drizzle ORM, PostgreSQL 14+, Zod |
+| `packages/server` | Node 20+, Fastify 5, Drizzle ORM, PostgreSQL 14+, Zod, Playwright (headless Chromium for booking-flow price checks) |
 | `packages/web` | React 18, Vite, TanStack Query, React Router, Zustand (compare selection only), Recharts, Lucide |
 | Tests | Vitest (unit + integration), Playwright (e2e) |
 
@@ -55,9 +55,9 @@ npm start          # serves API + the built web app on PORT (default 4000)
 | --- | --- |
 | `npm run typecheck` | `tsc --noEmit` for all packages |
 | `npm run lint` | ESLint over `packages` and `e2e` |
-| `npm run test:unit` | core unit + pipeline integration tests (73) |
-| `npm run test:server` | server API integration tests against `DATABASE_URL_TEST` (22) |
-| `npm run test:e2e` | Playwright flows; starts its own API (port 4100) and web (5174) against `DATABASE_URL_TEST` |
+| `npm run test:unit` | core unit + pipeline integration tests (79) |
+| `npm run test:server` | server API integration tests against `DATABASE_URL_TEST` (27, includes a real headless-browser booking flow) |
+| `npm run test:e2e` | Playwright flows (8); starts its own API (port 4100) and web (5174) against `DATABASE_URL_TEST` |
 | `npm run db:migrate` / `db:seed` / `db:generate` | migrations, seed, generate a new migration from the schema |
 
 Playwright: the repo pins `@playwright/test` 1.56. Run `npx playwright install chromium` once, or point
@@ -156,6 +156,66 @@ instants, never from local clock differences.
 `GET /api/history`, `GET /api/history/summary` · `GET /api/radar` · `GET /api/providers/status` ·
 `GET /api/scheduler`, `POST /api/scheduler/run` · `GET /api/health`.
 
+## Flight class for every flight
+
+A profile has **cabins to search** (any combination of Economy, Premium economy, Business, First — each is searched,
+scored, Pareto-analysed and baselined separately so an economy fare never "dominates" a business one) and a
+**minimum feeder cabin** for short-haul segments. Long-haul segments must always be in the searched cabin; set the
+minimum feeder cabin equal to it to require that class on every flight. Both are hard constraints: violations are
+rejected with an explicit reason, never silently down-scored.
+
+## Final price verification (booking flow up to payment)
+
+Quoted fares are not what you pay. After every search the top `VERIFY_TOP_N` journeys are queued for an
+**asynchronous booking-flow check**: a driver walks the selling channel's booking process — fare selection,
+passenger details, extras, payment page — reads the total shown at the payment step and stops there. Nothing is
+ever booked or paid.
+
+* `price_verifications` holds the queue (`QUEUED → RUNNING → VERIFIED | FAILED | UNSUPPORTED`), the final price,
+  the fee breakdown and every step with a screenshot (`packages/server/data/verifications/<id>/`).
+* The verified price becomes `verifiedFare` on the itinerary; `bookingFees = final − quoted` is added to the true
+  journey cost and the run is re-scored, so the ranking follows the real price. It is also appended to the price
+  history as a `booking-flow:<driver>` observation.
+* The UI shows a **Final price** column (queued / checking / verified / failed / no flow), the breakdown and the
+  step screenshots in the journey drawer, and a **Check final price** button for any journey.
+* Drivers implement `BookingFlowDriver` (`packages/server/src/verification`). Shipped: `mock-airline` (a headless
+  Chromium via Playwright walking the self-hosted mock airline site at `/mock-airline/…`, the reference for real
+  airline drivers) and `api-pricing` (Duffel / Amadeus pricing endpoint, which *is* the pre-payment total for API
+  channels). Real airline websites need a driver each with their own selectors; expect bot detection, captchas and
+  DOM changes — treat those drivers as maintained scrapers, not fire-and-forget code.
+* Configuration: `VERIFY_ENABLED`, `VERIFY_TOP_N`, `VERIFY_CONCURRENCY`, `VERIFY_DATA_DIR`,
+  `PLAYWRIGHT_CHROMIUM_PATH` (empty = the browser installed by `npx playwright install chromium`),
+  `PUBLIC_BASE_URL`. Status on **Settings → Providers & scheduler**; API: `GET /api/verifications?runId=`,
+  `GET /api/verifications/:id`, `POST /api/itineraries/:id/verify`, `GET /api/verifications/status`.
+
+## Flight class for every flight
+
+A profile has **classes to search** (any of Economy, Premium economy, Business, First; each is searched, scored and
+ranked as its own requested class, with its own baseline and Pareto set) and a **minimum class for feeder /
+short-haul flights**. Long-haul flights must always be in the searched class; feeder flights may be lower, down to
+the minimum, and anything below is rejected as a hard constraint. Set the minimum equal to the searched class to
+require it on every flight.
+
+## Booking-flow price verification
+
+Quoted fares are not final prices. After every search the top `VERIFY_TOP_N` journeys are handed to an asynchronous
+worker that walks the selling channel's booking process **up to the payment page and stops there** — nothing is
+ever booked or paid — and records the total it sees, with a screenshot of every step. The verified price feeds
+straight back into the true journey cost (`bookingFees` = final − quoted), the run is re-scored, and because that
+can promote an unchecked journey into the top N, verification follows the ranking until the top N are all verified.
+
+| Channel | Driver | Mechanism |
+| --- | --- | --- |
+| Mock provider | `mock-airline` | Playwright walks the self-hosted mock airline site (`/mock-airline/book/:id` → passengers → extras → payment). This is the reference implementation of a browser driver and is exercised by the tests. |
+| Duffel, Amadeus | `api-pricing` | The pricing endpoint *is* the pre-payment step for API channels; its total is the final price. |
+| Real airline websites | *per airline* | Implement `BookingFlowDriver` (`packages/server/src/verification/types.ts`) with that site's selectors. Expect bot detection, captchas and frequent DOM changes; keep concurrency at 1 and treat failures as data (they are shown as `FAILED` with the step that broke). |
+
+Results are visible as the **Final price** column, in the journey drawer (breakdown, steps, screenshots, "Check
+final price" for any journey) and on Settings → Providers (queue, browser, drivers). A verification of the same
+flights within `VERIFY_CACHE_MINUTES` is reused instead of walking the flow again. Screenshots live in
+`VERIFY_DATA_DIR` (default `packages/server/data/verifications`). Chromium comes from `PLAYWRIGHT_CHROMIUM_PATH` or
+`npx playwright install chromium`.
+
 ## Background searching & alerts
 
 `SCHEDULER_ENABLED=true` runs the default profile every `SCHEDULER_INTERVAL_HOURS`, stores observations and sends a
@@ -194,7 +254,8 @@ form (not in function) or depends on external services:
 | 9–11 True journey cost, door-to-Krabi time, elapsed vs active burden | implemented | |
 | 12–14 Transfer model, hard constraints, hard vs soft | implemented | outbound/return independent |
 | 15–16 Time preferences, sleep value | implemented | 4 editable band curves + deterministic sleep bonus |
-| 17–19 Trip profile, cabin model, product data | implemented | aircraft, seat product, fare class stored when providers expose them |
+| 17–19 Trip profile, cabin model, product data | implemented | cabins to search + minimum feeder cabin per profile; aircraft, seat product, fare class stored when providers expose them |
+| Final price via booking flow (up to payment) | implemented | async Playwright worker, driver per channel; `mock-airline` reference driver + `api-pricing`; real airline drivers to be authored per website |
 | 20–22 Provider abstraction, normalized model, segments | implemented | mock + Duffel + Amadeus adapters; docs read via official SDK typings |
 | 23–25 Two-stage search, price history, deal intelligence | implemented | |
 | 26–31 Scoring engine, weights, timing, transfers, saving/hour, Pareto | implemented | |
@@ -202,6 +263,8 @@ form (not in function) or depends on external services:
 | 43–45 Storage, stack, API | implemented | constraint/time/weight profiles are JSONB inside `trip_profiles` (self-contained profiles); the search request is stored on the run |
 | 46–47 Scheduler, alerts | implemented | notification delivery = log provider; Telegram/e-mail/push not implemented (interface ready) |
 | 48–53 Security, provider failure, dedupe, currency, time zones, performance | implemented | |
-| 54–55 Mock data, tests | implemented | 73 core, 22 server, 7 Playwright flows |
+| 54–55 Mock data, tests | implemented | 79 core, 27 server, 8 Playwright flows |
+| Class selection for all flights | implemented | classes to search + minimum feeder class per profile |
+| Booking-flow final price verification | implemented | async Playwright worker, mock airline reference driver, API pricing driver; real airline drivers are per-site work |
 | 56–60 UX rules, acceptance criteria | implemented | default sort = overall score; labels; similar dates collapsed with explanation |
 | Live provider validation | requires credentials | adapters implemented and unit-tested; not exercised against live APIs |

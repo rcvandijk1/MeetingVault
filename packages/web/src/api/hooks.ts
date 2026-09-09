@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { MatrixMetric } from '@kfr/core';
 import { api } from './client';
@@ -39,6 +40,35 @@ export const useHistory = (q: { origin?: string; gateway?: string; cabin?: strin
 export const useHistorySummary = () => useQuery({ queryKey: keys.historySummary, queryFn: api.historySummary });
 export const useProviderStatus = () => useQuery({ queryKey: keys.providers, queryFn: api.providerStatus, refetchInterval: 30000 });
 export const useScheduler = () => useQuery({ queryKey: keys.scheduler, queryFn: api.scheduler, refetchInterval: 30000 });
+
+const PENDING = new Set(['QUEUED', 'RUNNING']);
+
+/**
+ * Verifications of a run (or of specific itineraries). Polls while any is
+ * pending and invalidates the loaded journeys when a verification finishes,
+ * so the true journey cost and scores follow the verified final price.
+ */
+export function useVerifications(q: { runId?: string; ids?: string[] }) {
+  const qc = useQueryClient();
+  const enabled = Boolean(q.runId || (q.ids && q.ids.length));
+  const query = useQuery({
+    queryKey: ['verifications', q.runId ?? '', (q.ids ?? []).join(',')],
+    queryFn: () => api.verifications(q),
+    enabled,
+    refetchInterval: (query) => (query.state.data?.some((v) => PENDING.has(v.status)) ? 2000 : false),
+  });
+  const finished = (query.data ?? []).filter((v) => !PENDING.has(v.status)).length;
+  useEffect(() => {
+    if (finished > 0) {
+      void qc.invalidateQueries({ queryKey: ['runs'] });
+      void qc.invalidateQueries({ queryKey: ['radar'] });
+      void qc.invalidateQueries({ queryKey: ['itineraries'] });
+    }
+  }, [finished, qc]);
+  return query;
+}
+
+export const useVerificationStatus = () => useQuery({ queryKey: ['verifications', 'status'], queryFn: api.verificationStatus, refetchInterval: 5000 });
 
 export function useInvalidate() {
   const qc = useQueryClient();

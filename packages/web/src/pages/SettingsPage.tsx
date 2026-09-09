@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { Play, Save, Plus, Trash2 } from 'lucide-react';
 import { ACCESS_MODES, GROUND_MODES, type Airport, type DestinationGateway, type GroundTransferProfile, type OriginAccessProfile } from '@kfr/core';
 import { api, ApiError, type Settings } from '../api/client';
-import { useGateways, useGroundTransfers, useInvalidate, useOrigins, useProviderStatus, useReference, useScheduler, useSettings } from '../api/hooks';
+import { useGateways, useGroundTransfers, useInvalidate, useOrigins, useProviderStatus, useReference, useScheduler, useSettings, useVerificationStatus } from '../api/hooks';
 import { Card, Check, Drawer, Field, Loading, NumberField, SelectField, Tabs, TextField } from '../components/ui';
 import { fmtInstant, formatDuration, formatEur } from '../lib/format';
 
@@ -291,6 +291,40 @@ function ThresholdsCard() {
   );
 }
 
+function VerificationCard() {
+  const s = useVerificationStatus();
+  if (!s.data) return <Loading />;
+  const d = s.data;
+  return (
+    <Card title="Booking-flow price verification" testId="verification-card">
+      <dl className="kv">
+        <dt>Enabled</dt>
+        <dd>{d.enabled ? 'yes' : 'no (VERIFY_ENABLED=false)'}</dd>
+        <dt>Queue</dt>
+        <dd>
+          {d.queued} queued · {d.running} running · concurrency {d.concurrency}
+        </dd>
+        <dt>Drivers</dt>
+        <dd>{d.drivers.map((x) => `${x.name} (${x.kind === 'BROWSER' ? 'headless browser' : 'pricing API'})`).join(', ') || 'none'}</dd>
+        <dt>Browser</dt>
+        <dd>
+          {d.browser.running ? 'running' : 'idle'}
+          {d.browser.executablePath && <span className="muted"> · {d.browser.executablePath}</span>}
+          {d.browser.lastError && <span className="error"> · {d.browser.lastError}</span>}
+        </dd>
+        <dt>Processed</dt>
+        <dd>
+          {d.processed} · {d.verified} verified · {d.failed} failed
+          {d.lastError && <span className="error"> · last error: {d.lastError}</span>}
+        </dd>
+      </dl>
+      <p className="tiny muted" style={{ marginTop: 8 }}>
+        After each search the top {`VERIFY_TOP_N`} journeys are checked by walking the selling channel's booking process up to the payment page and reading the final price there. Nothing is ever booked or paid. Browser drivers exist per airline / website; API channels (Duffel, Amadeus) use their pricing endpoint.
+      </p>
+    </Card>
+  );
+}
+
 function ProvidersCard() {
   const status = useProviderStatus();
   const scheduler = useScheduler();
@@ -395,6 +429,7 @@ function ProvidersCard() {
         )}
         <p className="tiny muted" style={{ marginTop: 8 }}>Each cycle searches the default profile, appends fare observations and pushes alerts for new or cheaper journeys above the alert thresholds through the configured notification provider.</p>
       </Card>
+      <VerificationCard />
     </div>
   );
 }

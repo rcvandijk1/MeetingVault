@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { rescoreJourneys, type ScoreWeights, type ScoredJourney, type TripProfile } from '@kfr/core';
-import { useReference } from '../api/hooks';
+import { useReference, useVerifications } from '../api/hooks';
+import type { Verification } from '../api/client';
 import { ResultsTable } from './ResultsTable';
 import { ResultFiltersPanel } from './ResultFilters';
 import { WeightsPanel } from './WeightsPanel';
@@ -15,14 +16,22 @@ interface Props {
   /** Optional externally controlled weights (e.g. from the profile editor). */
   initialWeights?: ScoreWeights;
   title?: string;
+  /** Search run the journeys belong to; enables booking-flow verification status. */
+  runId?: string;
 }
 
 /**
  * Results cockpit shared by the Radar and Search screens: filters, sorting,
  * immediate re-scoring on weight changes, origin matrix and journey detail.
  */
-export function ResultsView({ journeys, profile, initialWeights, title }: Props) {
+export function ResultsView({ journeys, profile, initialWeights, title, runId }: Props) {
   const ref = useReference();
+  const verifications = useVerifications({ runId });
+  const verificationByItinerary = useMemo(() => {
+    const m = new Map<string, Verification>();
+    for (const v of verifications.data ?? []) if (!m.has(v.itineraryId)) m.set(v.itineraryId, v);
+    return m;
+  }, [verifications.data]);
   const [weights, setWeights] = useState<ScoreWeights>(initialWeights ?? profile.scoringWeights);
   const [filters, setFilters] = useState<ResultFilters>(EMPTY_FILTERS);
   const [sort, setSort] = useState<SortKey>('score');
@@ -80,6 +89,7 @@ export function ResultsView({ journeys, profile, initialWeights, title }: Props)
               weights={weights}
               baselineOrigin={profile.baselineOrigin}
               collapseSimilar={filters.collapseSimilar}
+              verifications={verificationByItinerary}
               onOpen={setOpen}
               sort={sort}
               sortDir={sortDir}

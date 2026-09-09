@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
@@ -245,6 +247,57 @@ export function registerRoutes(app: FastifyInstance, deps: AppDeps): void {
     const usage = await repos.providerUsageSummary(24);
     const errors = await repos.recentProviderErrors(20);
     return { configured: config.providers, health, usage24h: usage, recentErrors: errors, limits: { maxConcurrency: config.PROVIDER_MAX_CONCURRENCY, minIntervalMs: config.PROVIDER_MIN_INTERVAL_MS, cacheTtlMinutes: config.PROVIDER_CACHE_TTL_MINUTES } };
+  });
+
+  // ---------------------------------------------------------- verification
+  const verificationView = (v: NonNullable<Awaited<ReturnType<typeof repos.getVerification>>>) => ({
+    id: v.id,
+    itineraryId: v.itineraryId,
+    searchRunId: v.searchRunId,
+    status: v.status,
+    driver: v.driver,
+    attempts: v.attempts,
+    requestedAt: v.requestedAt.toISOString(),
+    startedAt: v.startedAt?.toISOString() ?? null,
+    finishedAt: v.finishedAt?.toISOString() ?? null,
+    quotedFare: v.quotedFare,
+    quotedCurrency: v.quotedCurrency,
+    finalPrice: v.finalPrice,
+    finalCurrency: v.finalCurrency,
+    finalPriceEur: v.finalPriceEur,
+    breakdown: v.breakdown,
+    steps: v.steps.map((s) => ({ ...s, screenshotUrl: s.screenshot ? `/api/verifications/${v.id}/screenshots/${s.screenshot}` : null })),
+    error: v.error,
+  });
+
+  app.get('/api/verifications', async (req) => {
+    const q = z.object({ runId: z.string().optional(), ids: z.string().optional(), limit: z.coerce.number().int().min(1).max(1000).default(500) }).parse(req.query);
+    const rows = await repos.listVerifications({ runId: q.runId, itineraryIds: q.ids?.split(',').filter(Boolean), limit: q.limit });
+    return rows.map(verificationView);
+  });
+  app.get('/api/verifications/status', async () => deps.verifier.status());
+  app.get('/api/verifications/:id', async (req, reply) => {
+    const { id } = idParam.parse(req.params);
+    const v = await repos.getVerification(id);
+    return v ? verificationView(v) : reply.code(404).send({ error: 'Verification not found' });
+  });
+  app.get('/api/verifications/:id/screenshots/:file', async (req, reply) => {
+    const { id, file } = z.object({ id: z.string().min(1), file: z.string().regex(/^[\w.-]+\.png$/) }).parse(req.params);
+    const dataDir = config.VERIFY_DATA_DIR ?? (deps.verifier as unknown as { deps: { dataDir: string } }).deps.dataDir;
+    const full = path.join(dataDir, id, file);
+    if (!full.startsWith(path.resolve(dataDir)) || !fs.existsSync(full)) return reply.code(404).send({ error: 'Not found' });
+    return reply.type('image/png').send(fs.createReadStream(full));
+  });
+  app.post('/api/itineraries/:id/verify', async (req, reply) => {
+    const { id } = idParam.parse(req.params);
+    const runId = await repos.getItineraryRunId(id);
+    const verificationId = await deps.verifier.enqueue(id, runId, 10);
+    const v = await repos.getVerification(verificationId);
+    return reply.code(202).send(v ? verificationView(v) : { id: verificationId });
+  });
+  app.post('/api/verifications/drain', async () => {
+    await deps.verifier.drain();
+    return deps.verifier.status();
   });
 
   // ------------------------------------------------------------ scheduler

@@ -63,7 +63,7 @@ export function RadarPage() {
                 <Stat label="Best alternative origin" value={altOrigin ? altOrigin.itinerary.originAirport : '—'} sub={altOrigin ? (altOrigin.baseline.dominant ? 'cheaper and faster than baseline' : altOrigin.baseline.savingPerExtraHour !== null ? `${formatEur(altOrigin.baseline.savingPerExtraHour)} saved per extra hour` : `${formatEur(altOrigin.baseline.savingVsBaseline, { sign: true })} vs baseline`) : undefined} />
                 <Stat label="Last search" value={fmtInstant(data.run.finishedAt)} sub={`${data.run.resultCount} journeys · ${data.run.stats?.rejected ?? 0} rejected by hard rules · ${data.run.providerErrors.length} provider errors`} />
               </div>
-              {profile && <ResultsView journeys={data.journeys} profile={profile} title={`Opportunities · ${profile.name}`} />}
+              {profile && <ResultsView journeys={data.journeys} profile={profile} title={`Opportunities · ${profile.name}`} runId={data.run.id} />}
             </>
           ) : (
             <Card>

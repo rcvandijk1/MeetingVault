@@ -37,7 +37,8 @@ beforeAll(async () => {
   const built = await buildApp({ config: base, db, providers: [new MockFlightSearchProvider({ now: () => new Date(clock) })], notifier, now: () => new Date(clock), logger: false });
   app = built.app;
   deps = built.deps;
-  await app.ready();
+  // Listen on a random port: the booking-flow driver reaches the mock airline site over HTTP.
+  await app.listen({ port: 0, host: '127.0.0.1' });
 });
 
 afterAll(async () => {
@@ -290,6 +291,79 @@ describe('search, persistence and scoring', () => {
     }
     const status = await get<{ recentErrors: Array<{ error: string }> }>('/api/providers/status');
     expect(status.body.recentErrors.length).toBeGreaterThan(0);
+  });
+
+  it('verifies the final price of top journeys by walking the mock airline booking flow up to payment', async () => {
+    // Verifications for the top 3 were queued automatically when the run completed; let the worker finish them.
+    const queued = await get<Array<{ itineraryId: string; status: string }>>(`/api/verifications?runId=${runId}`);
+    expect(queued.body.length).toBeGreaterThanOrEqual(3);
+    await send('POST', '/api/verifications/drain');
+    const list = await get<Array<{ itineraryId: string; status: string; driver: string; finalPriceEur: number | null; quotedFare: number; steps: Array<{ name: string; ok: boolean; screenshotUrl: string | null }>; breakdown: Array<{ label: string; amount: number }> }>>(`/api/verifications?runId=${runId}`);
+    expect(list.status).toBe(200);
+    const verified = list.body.filter((v) => v.status === 'VERIFIED');
+    expect(verified.length).toBeGreaterThanOrEqual(3);
+    // Verification follows the ranking: whatever is in the top 3 now has a verified final price.
+    const ranked = await get<ScoredJourney[]>(`/api/itineraries?runId=${runId}`);
+    expect(ranked.body.slice(0, 3).every((j) => j.itinerary.verifiedFare && j.cost.fareVerified)).toBe(true);
+    const v = verified.find((x) => x.steps.length === 5)!;
+    expect(v.driver).toBe('mock-airline');
+    expect(v.finalPriceEur).toBeGreaterThan(v.quotedFare);
+    expect(v.steps.map((s) => s.name)).toEqual(['open-fare', 'select-fare', 'passenger-details', 'extras', 'payment-page']);
+    expect(v.steps.every((s) => s.ok && s.screenshotUrl)).toBe(true);
+    expect(v.breakdown.some((b) => b.label === 'Ticket issuance fee')).toBe(true);
+    const shot = await app.inject({ method: 'GET', url: v.steps[4]!.screenshotUrl! });
+    expect(shot.statusCode).toBe(200);
+    expect(shot.headers['content-type']).toContain('image/png');
+
+    // The verified price flows into the true journey cost and the scores of the run.
+    const after = await get<ScoredJourney>(`/api/itineraries/${v.itineraryId}`);
+    expect(after.body.itinerary.verifiedFare?.source).toBe('booking-flow:mock-airline');
+    expect(after.body.cost.fareVerified).toBe(true);
+    expect(after.body.cost.airfare).toBeCloseTo(v.quotedFare, 1);
+    expect(after.body.cost.bookingFees).toBeCloseTo(v.finalPriceEur! - v.quotedFare, 1);
+    expect(after.body.cost.trueJourneyCost).toBeCloseTo(after.body.cost.airfare + after.body.cost.bookingFees + after.body.cost.accessOutbound + after.body.cost.accessReturn + after.body.cost.hotelOutbound + after.body.cost.hotelReturn + after.body.cost.parking + after.body.cost.groundOutbound + after.body.cost.groundReturn, 1);
+
+    // The final price is recorded as an observation and the worker reports its status.
+    const hist = await get<{ observations: Array<{ provider: string }> }>('/api/history?days=30');
+    expect(hist.body.observations.some((o) => o.provider === 'booking-flow:mock-airline')).toBe(true);
+    const status = await get<{ verified: number; drivers: Array<{ name: string }>; browser: { running: boolean } }>('/api/verifications/status');
+    expect(status.body.verified).toBeGreaterThanOrEqual(3);
+    expect(status.body.drivers.map((d) => d.name)).toContain('mock-airline');
+  });
+
+  it('reuses a recent verification of the same flights instead of walking the flow again', async () => {
+    const statusBefore = await get<{ verified: number }>('/api/verifications/status');
+    // A new search of the same profile produces the same physical itineraries (same fingerprints).
+    const r = await send<{ run: { id: string } }>('POST', '/api/search', { overrides: { passengers: 1 } });
+    const list = await get<Array<{ status: string; driver: string | null; steps: Array<{ name: string }> }>>(`/api/verifications?runId=${r.body.run.id}`);
+    expect(list.body.length).toBeGreaterThanOrEqual(3);
+    const reused = list.body.filter((v) => v.driver?.endsWith('(reused)'));
+    expect(reused.length).toBeGreaterThan(0);
+    expect(reused[0]!.status).toBe('VERIFIED');
+    expect(reused[0]!.steps[0]!.name).toBe('reuse');
+    await send('POST', '/api/verifications/drain');
+    const after = await get<Array<{ status: string; driver: string | null }>>(`/api/verifications?runId=${r.body.run.id}`);
+    expect(after.body.every((v) => v.status === 'VERIFIED')).toBe(true);
+    // Reused results do not walk the flow, so they never count as newly verified work.
+    const walked = after.body.filter((v) => !v.driver?.endsWith('(reused)')).length;
+    const statusAfter = await get<{ verified: number }>('/api/verifications/status');
+    expect(statusAfter.body.verified - statusBefore.body.verified).toBe(walked);
+  });
+
+  it('marks itineraries without a booking-flow driver as unsupported and lets the user request verification', async () => {
+    const journeys = await get<ScoredJourney[]>(`/api/itineraries?runId=${runId}`);
+    const target = journeys.body[journeys.body.length - 1]!;
+    const r = await send<{ status: string; id: string }>('POST', `/api/itineraries/${target.itinerary.id}/verify`);
+    expect(r.status).toBe(202);
+    expect(['QUEUED', 'RUNNING', 'VERIFIED']).toContain(r.body.status);
+    await send('POST', '/api/verifications/drain');
+    const v = await get<{ status: string }>(`/api/verifications/${r.body.id}`);
+    expect(v.body.status).toBe('VERIFIED');
+    // Unsupported channel: a driverless itinerary is marked immediately.
+    (deps.verifier as unknown as { deps: { drivers: unknown[] } }).deps.drivers.splice(0);
+    const u = await send<{ status: string; error: string }>('POST', `/api/itineraries/${journeys.body[1]!.itinerary.id}/verify`);
+    expect(u.body.status).toBe('UNSUPPORTED');
+    expect(u.body.error).toContain('No booking-flow driver');
   });
 
   it('runs the scheduler cycle and emits alerts through the notification provider', async () => {

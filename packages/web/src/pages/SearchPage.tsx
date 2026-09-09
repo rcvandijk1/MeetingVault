@@ -128,7 +128,7 @@ export function SearchPage() {
                 </details>
               )}
             </Card>
-            <ResultsView journeys={result.journeys} profile={profileForResults} initialWeights={config?.scoringWeights} title="Ranked journeys" />
+            <ResultsView journeys={result.journeys} profile={profileForResults} initialWeights={config?.scoringWeights} title="Ranked journeys" runId={result.run.id} />
           </>
         )}
 

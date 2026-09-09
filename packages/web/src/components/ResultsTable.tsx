@@ -1,6 +1,8 @@
 import { Fragment, useState } from 'react';
 import { ChevronDown, ChevronRight, GitCompare } from 'lucide-react';
 import type { ScoreWeights, ScoredJourney } from '@kfr/core';
+import type { Verification } from '../api/client';
+import { FinalPriceCell } from './VerificationPanel';
 import { useCompareStore } from '../store/compare';
 import { DealBadge, LabelChips, ScorePill } from './Badges';
 import { ScoreBreakdownModal } from './ScoreBreakdown';
@@ -12,13 +14,14 @@ interface Props {
   weights: ScoreWeights;
   baselineOrigin?: string;
   collapseSimilar: boolean;
+  verifications?: Map<string, Verification>;
   onOpen: (j: ScoredJourney) => void;
   sort: SortKey;
   sortDir: 'asc' | 'desc';
   onSort: (k: SortKey, dir: 'asc' | 'desc') => void;
 }
 
-export function ResultsTable({ journeys, weights, baselineOrigin, collapseSimilar, onOpen, sort, sortDir, onSort }: Props) {
+export function ResultsTable({ journeys, weights, baselineOrigin, collapseSimilar, verifications, onOpen, sort, sortDir, onSort }: Props) {
   const [breakdown, setBreakdown] = useState<ScoredJourney | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const compare = useCompareStore();
@@ -93,6 +96,9 @@ export function ResultsTable({ journeys, weights, baselineOrigin, collapseSimila
           <div className="tiny muted">airfare</div>
         </td>
         <td className="right">
+          <FinalPriceCell journey={j} verification={verifications?.get(it.id)} />
+        </td>
+        <td className="right">
           <div className="mono strong" data-testid="row-true-cost">{formatEur(j.cost.trueJourneyCost)}</div>
           <div className="tiny muted">true cost</div>
         </td>
@@ -135,6 +141,7 @@ export function ResultsTable({ journeys, weights, baselineOrigin, collapseSimila
             {header('departure', 'Dates')}
             {header('arrival', 'Times')}
             {header('airfare', 'Airfare', 'right')}
+            <th className="right" title="Final price seen on the payment page of the booking flow">Final price</th>
             {header('trueCost', 'True cost', 'right')}
             {header('doorToDoor', 'Door → Krabi', 'right')}
             <th>Transfers</th>
@@ -152,7 +159,7 @@ export function ResultsTable({ journeys, weights, baselineOrigin, collapseSimila
           ))}
           {groups.length === 0 && (
             <tr>
-              <td colSpan={11} className="center muted" style={{ padding: 30 }}>
+              <td colSpan={12} className="center muted" style={{ padding: 30 }}>
                 No journeys match the current filters.
               </td>
             </tr>

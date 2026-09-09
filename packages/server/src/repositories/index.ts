@@ -26,6 +26,7 @@ import {
   itineraries,
   knownItineraries,
   originAccessProfiles,
+  priceVerifications,
   providerEvents,
   providerOfferReferences,
   scoreResults,
@@ -428,6 +429,76 @@ export class Repositories {
       .groupBy(fareObservations.originAirport, fareObservations.arrivalGateway, fareObservations.cabin)
       .orderBy(fareObservations.originAirport, fareObservations.arrivalGateway);
     return rows.map((r) => ({ ...r, count: Number(r.count), minFareEur: Number(r.minFareEur), medianFareEur: Number(r.medianFareEur), lastObservedAt: new Date(r.lastObservedAt).toISOString() }));
+  }
+
+  // ------------------------------------------------------------ verification
+  async createVerification(row: typeof priceVerifications.$inferInsert): Promise<void> {
+    await this.db.insert(priceVerifications).values(row);
+  }
+
+  async updateVerification(id: string, patch: Partial<typeof priceVerifications.$inferInsert>): Promise<void> {
+    await this.db.update(priceVerifications).set(patch).where(eq(priceVerifications.id, id));
+  }
+
+  /** Atomically claims the next queued verification (highest priority, oldest first). */
+  async claimNextVerification(now: Date): Promise<{ id: string; itineraryId: string; attempts: number } | null> {
+    const rows = await this.db.execute(sql`
+      update ${priceVerifications} set status = 'RUNNING', started_at = ${now.toISOString()}::timestamptz, attempts = attempts + 1
+      where id = (
+        select id from ${priceVerifications} where status = 'QUEUED'
+        order by priority desc, requested_at asc
+        for update skip locked limit 1
+      )
+      returning id, itinerary_id, attempts`);
+    const r = (rows as unknown as Array<{ id: string; itinerary_id: string; attempts: number }>)[0];
+    return r ? { id: r.id, itineraryId: r.itinerary_id, attempts: Number(r.attempts) } : null;
+  }
+
+  async getVerification(id: string) {
+    return (await this.db.select().from(priceVerifications).where(eq(priceVerifications.id, id)))[0] ?? null;
+  }
+
+  async latestVerification(itineraryId: string) {
+    return (await this.db.select().from(priceVerifications).where(eq(priceVerifications.itineraryId, itineraryId)).orderBy(desc(priceVerifications.requestedAt)).limit(1))[0] ?? null;
+  }
+
+  async listVerifications(f: { runId?: string; itineraryIds?: string[]; limit?: number }) {
+    const conds = [];
+    if (f.runId) conds.push(eq(priceVerifications.searchRunId, f.runId));
+    if (f.itineraryIds && f.itineraryIds.length) conds.push(inArray(priceVerifications.itineraryId, f.itineraryIds));
+    return this.db
+      .select()
+      .from(priceVerifications)
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(priceVerifications.requestedAt))
+      .limit(f.limit ?? 500);
+  }
+
+  /** Most recent successful verification of the same physical itinerary (any run) since `since`. */
+  async latestVerifiedByFingerprint(fingerprint: string, since: Date) {
+    const rows = await this.db
+      .select({ v: priceVerifications })
+      .from(priceVerifications)
+      .innerJoin(itineraries, eq(itineraries.id, priceVerifications.itineraryId))
+      .where(and(eq(itineraries.fingerprint, fingerprint), eq(priceVerifications.status, 'VERIFIED'), gte(priceVerifications.finishedAt, since)))
+      .orderBy(desc(priceVerifications.finishedAt))
+      .limit(1);
+    return rows[0]?.v ?? null;
+  }
+
+  async resetRunningVerifications(): Promise<number> {
+    const r = await this.db.update(priceVerifications).set({ status: 'QUEUED', startedAt: null }).where(eq(priceVerifications.status, 'RUNNING')).returning({ id: priceVerifications.id });
+    return r.length;
+  }
+
+  async countVerifications(status: string): Promise<number> {
+    const r = await this.db.select({ n: sql<number>`count(*)` }).from(priceVerifications).where(eq(priceVerifications.status, status));
+    return Number(r[0]?.n ?? 0);
+  }
+
+  async getItineraryRunId(itineraryId: string): Promise<string | null> {
+    const r = (await this.db.select({ runId: itineraries.searchRunId }).from(itineraries).where(eq(itineraries.id, itineraryId)))[0];
+    return r?.runId ?? null;
   }
 
   // ---------------------------------------------------------- provider events

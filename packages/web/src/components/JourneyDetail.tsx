@@ -6,6 +6,7 @@ import { useInvalidate } from '../api/hooks';
 import { useCompareStore } from '../store/compare';
 import { DealBadge, LabelChips, ScorePill } from './Badges';
 import { ScoreBreakdownContent } from './ScoreBreakdown';
+import { VerificationPanel } from './VerificationPanel';
 import { Tabs } from './ui';
 import { cabinLabel, fmtDate, fmtDateTime, fmtInstant, fmtPct, fmtTime, formatDuration, formatEur, hoursMinutes, routeOf } from '../lib/format';
 
@@ -115,9 +116,15 @@ export function JourneyDetail({ journey, weights, baselineOrigin }: { journey: S
               <table className="cost-table">
                 <tbody>
                   <tr>
-                    <td>Airfare</td>
+                    <td>Airfare (quoted)</td>
                     <td data-testid="detail-airfare">{formatEur(j.cost.airfare)}</td>
                   </tr>
+                  {j.cost.fareVerified && (
+                    <tr>
+                      <td>Booking fees found at payment step</td>
+                      <td data-testid="detail-booking-fees">{formatEur(j.cost.bookingFees, { sign: true })}</td>
+                    </tr>
+                  )}
                   <tr>
                     <td>Travel to {it.originAirport} ({j.originAccess.mode.toLowerCase().replace('_', ' ')}) × 2</td>
                     <td>{formatEur(j.cost.accessOutbound + j.cost.accessReturn)}</td>
@@ -151,6 +158,7 @@ export function JourneyDetail({ journey, weights, baselineOrigin }: { journey: S
                 </tbody>
               </table>
             </div>
+            <VerificationPanel journey={j} />
             <div>
               <h3 style={{ marginBottom: 6 }}>Versus baseline {j.baseline.baselineOrigin ? `(best ${j.baseline.baselineOrigin})` : ''}</h3>
               {j.baseline.isBaseline ? (

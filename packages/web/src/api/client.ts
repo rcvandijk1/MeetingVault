@@ -123,6 +123,41 @@ export interface SchedulerStatus {
   alertsSent: number;
 }
 
+export type VerificationStatus = 'QUEUED' | 'RUNNING' | 'VERIFIED' | 'FAILED' | 'UNSUPPORTED';
+
+export interface Verification {
+  id: string;
+  itineraryId: string;
+  searchRunId: string | null;
+  status: VerificationStatus;
+  driver: string | null;
+  attempts: number;
+  requestedAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  quotedFare: number;
+  quotedCurrency: string;
+  finalPrice: number | null;
+  finalCurrency: string | null;
+  finalPriceEur: number | null;
+  breakdown: Array<{ label: string; amount: number }>;
+  steps: Array<{ name: string; at: string; ok: boolean; url?: string | null; screenshot?: string | null; screenshotUrl: string | null; note?: string | null }>;
+  error: string | null;
+}
+
+export interface VerificationWorkerStatus {
+  enabled: boolean;
+  running: number;
+  queued: number;
+  concurrency: number;
+  drivers: Array<{ name: string; kind: 'BROWSER' | 'API' }>;
+  browser: { running: boolean; executablePath: string | null; lastError: string | null };
+  processed: number;
+  verified: number;
+  failed: number;
+  lastError: string | null;
+}
+
 export interface ProfileDefaults extends Omit<TripProfile, 'id'> {
   defaults: {
     weights: ScoreWeights;
@@ -186,5 +221,14 @@ export const api = {
   historySummary: () => get<HistorySummaryRow[]>('/api/history/summary'),
   providerStatus: () => get<ProviderStatus>('/api/providers/status'),
   scheduler: () => get<SchedulerStatus>('/api/scheduler'),
+  verifications: (q: { runId?: string; ids?: string[] }) => {
+    const params = new URLSearchParams();
+    if (q.runId) params.set('runId', q.runId);
+    if (q.ids?.length) params.set('ids', q.ids.join(','));
+    return get<Verification[]>(`/api/verifications?${params.toString()}`);
+  },
+  verification: (id: string) => get<Verification>(`/api/verifications/${id}`),
+  verifyItinerary: (itineraryId: string) => post<Verification>(`/api/itineraries/${itineraryId}/verify`),
+  verificationStatus: () => get<VerificationWorkerStatus>('/api/verifications/status'),
   runScheduler: () => post<{ runId: string | null; alerts: number; status: SchedulerStatus }>('/api/scheduler/run'),
 };
