@@ -13,19 +13,25 @@ const bool = z
   .optional()
   .transform((v) => v === undefined || v === '' ? undefined : ['1', 'true', 'yes', 'on'].includes(v.toLowerCase()));
 
+/** Optional string where an empty value (as shipped in .env.example) means "not set". */
+const optionalString = z
+  .string()
+  .optional()
+  .transform((v) => (v === undefined || v.trim() === '' ? undefined : v.trim()));
+
 const configSchema = z.object({
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
-  DATABASE_URL_TEST: z.string().optional(),
+  DATABASE_URL_TEST: optionalString,
   PORT: z.coerce.number().int().positive().default(4000),
   HOST: z.string().default('0.0.0.0'),
   LOG_LEVEL: z.string().default('info'),
   AUTO_SEED: bool.default('true'),
   FLIGHT_PROVIDERS: z.string().default('mock'),
-  DUFFEL_ACCESS_TOKEN: z.string().optional(),
+  DUFFEL_ACCESS_TOKEN: optionalString,
   DUFFEL_API_VERSION: z.string().default('v2'),
   DUFFEL_BASE_URL: z.string().default('https://api.duffel.com'),
-  AMADEUS_CLIENT_ID: z.string().optional(),
-  AMADEUS_CLIENT_SECRET: z.string().optional(),
+  AMADEUS_CLIENT_ID: optionalString,
+  AMADEUS_CLIENT_SECRET: optionalString,
   AMADEUS_BASE_URL: z.string().default('https://test.api.amadeus.com'),
   PROVIDER_MAX_CONCURRENCY: z.coerce.number().int().positive().default(3),
   PROVIDER_MIN_INTERVAL_MS: z.coerce.number().int().nonnegative().default(250),
@@ -36,13 +42,13 @@ const configSchema = z.object({
   VERIFY_TOP_N: z.coerce.number().int().nonnegative().default(3),
   VERIFY_CONCURRENCY: z.coerce.number().int().positive().default(1),
   VERIFY_CACHE_MINUTES: z.coerce.number().nonnegative().default(60),
-  VERIFY_DATA_DIR: z.string().optional(),
-  PLAYWRIGHT_CHROMIUM_PATH: z.string().optional(),
-  PUBLIC_BASE_URL: z.string().optional(),
+  VERIFY_DATA_DIR: optionalString,
+  PLAYWRIGHT_CHROMIUM_PATH: optionalString,
+  PUBLIC_BASE_URL: optionalString,
   SCHEDULER_ENABLED: bool.default('false'),
   SCHEDULER_INTERVAL_HOURS: z.coerce.number().positive().default(6),
   NOTIFICATION_PROVIDER: z.enum(['log', 'none']).default('log'),
-  STATIC_DIR: z.string().optional(),
+  STATIC_DIR: optionalString,
 });
 
 export type AppConfig = z.infer<typeof configSchema> & { providers: string[] };
