@@ -9,8 +9,14 @@ const config = loadConfig();
 try {
   if ((await ensureDatabase(config.DATABASE_URL)) === 'created') console.log('Created database', config.DATABASE_URL.replace(/\/\/.*@/, '//***@'));
 } catch (err) {
-  console.error(`Cannot reach PostgreSQL at ${config.DATABASE_URL.replace(/\/\/.*@/, '//***@')}: ${err instanceof Error ? err.message : String(err)}`);
-  console.error('Start PostgreSQL (for example `docker compose up -d db`) or fix DATABASE_URL in .env, then try again.');
+  // Node reports "refused on every address" as an AggregateError with an empty message; unwrap it.
+  const inner = err instanceof AggregateError ? err.errors[0] : err;
+  const code = (inner as { code?: string })?.code;
+  const message = inner instanceof Error && inner.message ? inner.message : String(inner);
+  console.error(`Cannot reach PostgreSQL at ${config.DATABASE_URL.replace(/\/\/.*@/, '//***@')}: ${code ? `${code} ` : ''}${message}`);
+  if (code === 'ECONNREFUSED') console.error('Nothing is listening on that host/port: PostgreSQL is not running, or it uses a different port. Start the service (Windows: `Get-Service postgresql*` then `Start-Service`) or run `docker compose up -d db`.');
+  else if (code === '28P01') console.error('Password rejected: fix the password in DATABASE_URL in .env.');
+  else console.error('Start PostgreSQL (for example `docker compose up -d db`) or fix DATABASE_URL in .env, then try again.');
   process.exit(1);
 }
 await runMigrations(config.DATABASE_URL);
