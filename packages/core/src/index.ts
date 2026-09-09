@@ -11,3 +11,4 @@ export * from './providers/index.js';
 export * from './notifications.js';
 export * from './context.js';
 export * from './plan.js';
+export * from './matrix.js';

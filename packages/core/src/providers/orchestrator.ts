@@ -159,19 +159,20 @@ export class SearchOrchestrator {
     this.cache.clear();
   }
 
-  private async throttle(provider: string): Promise<void> {
-    if (this.minInterval <= 0) return;
-    const last = this.lastCallAt.get(provider) ?? 0;
+  /** Per-provider minimum interval between calls; only live providers are rate limited. */
+  private async throttle(provider: FlightSearchProvider): Promise<void> {
+    if (this.minInterval <= 0 || !provider.capabilities.live) return;
+    const last = this.lastCallAt.get(provider.name) ?? 0;
     const wait = last + this.minInterval - Date.now();
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    this.lastCallAt.set(provider, Date.now());
+    this.lastCallAt.set(provider.name, Date.now());
   }
 
   private async call<T>(provider: FlightSearchProvider, kind: ProviderUsageEvent['kind'], request: unknown, fn: () => Promise<T>, count: (r: T) => number, usage: ProviderUsageEvent[], failures: ProviderFailure[]): Promise<T | null> {
     const release = await this.semaphore.acquire();
     const started = Date.now();
     try {
-      await this.throttle(provider.name);
+      await this.throttle(provider);
       const result = await fn();
       const e: ProviderUsageEvent = { provider: provider.name, kind, request, startedAt: new Date(started).toISOString(), durationMs: Date.now() - started, ok: true, error: null, resultCount: count(result), cached: false };
       usage.push(e);

@@ -70,7 +70,7 @@ export const selfTransferPolicySchema = z.object({
   baggageRecheckExtraMinutes: z.number().int().min(0).max(600),
 });
 
-export const tripProfileInputSchema = z
+export const tripProfileBaseSchema = z
   .object({
     name: z.string().min(1).max(120),
     isDefault: z.boolean().default(false),
@@ -96,7 +96,9 @@ export const tripProfileInputSchema = z
     enabledArrivalGateways: z.array(z.string().length(3)).min(1),
     baselineOrigin: z.string().length(3),
     maxValidationCandidates: z.number().int().min(1).max(500).default(48),
-  })
+  });
+
+export const tripProfileInputSchema = tripProfileBaseSchema
   .refine((p) => p.outboundEarliestDate <= p.outboundLatestDate, { message: 'Outbound window is inverted', path: ['outboundLatestDate'] })
   .refine((p) => p.returnEarliestDate <= p.returnLatestDate, { message: 'Return window is inverted', path: ['returnLatestDate'] })
   .refine((p) => p.minTripDays <= p.preferredTripDaysMin && p.preferredTripDaysMin <= p.preferredTripDaysMax && p.preferredTripDaysMax <= p.maxTripDays, {

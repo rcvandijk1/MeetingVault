@@ -21,6 +21,8 @@ export interface MockProviderOptions {
   latencyMs?: number;
   /** When set, the provider throws for these origins (for failure tests). */
   failForOrigins?: string[];
+  /** Provider name (defaults to "mock"); lets tests run several mock instances side by side. */
+  name?: string;
 }
 
 function priceJitter(key: string): number {
@@ -34,7 +36,7 @@ function weekendPremium(date: string): number {
 }
 
 export class MockFlightSearchProvider implements FlightSearchProvider {
-  readonly name = MOCK_PROVIDER_NAME;
+  readonly name: string;
   readonly capabilities = { discovery: true, refresh: true, live: false };
   private readonly templates: RouteTemplate[];
   private readonly synth: boolean;
@@ -44,6 +46,7 @@ export class MockFlightSearchProvider implements FlightSearchProvider {
   public calls = 0;
 
   constructor(opts: MockProviderOptions = {}) {
+    this.name = opts.name ?? MOCK_PROVIDER_NAME;
     this.templates = opts.templates ?? ROUTE_TEMPLATES;
     this.synth = opts.synthesizeGenericRoutes ?? true;
     this.now = opts.now ?? (() => new Date());
