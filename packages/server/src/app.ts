@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import path from 'node:path';
 import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { ZodError } from 'zod';
 import { ConsoleNotificationProvider, NoopNotificationProvider, SearchOrchestrator, type FlightSearchProvider, type NotificationProvider } from '@kfr/core';
 import type { AppConfig } from './config.js';
@@ -61,8 +62,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<{ app: FastifyIns
 
   registerRoutes(app, deps);
 
-  // Serve the built web app in production when a static directory is available.
-  const staticDir = config.STATIC_DIR ?? path.resolve(process.cwd(), '../web/dist');
+  // Serve the built web app in production when a static directory is available
+  // (packages/web/dist, resolved relative to this file so it works from dist/ and src/).
+  const staticDir = config.STATIC_DIR ?? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../web/dist');
   if (fs.existsSync(path.join(staticDir, 'index.html'))) {
     await app.register(fastifyStatic, { root: staticDir, prefix: '/' });
     app.setNotFoundHandler((req, reply) => {
