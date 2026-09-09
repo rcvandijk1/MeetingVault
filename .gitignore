@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+coverage/
+.env
+.env.local
+.env.*.local
+*.log
+.DS_Store
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+packages/web/dist/
+packages/server/dist/
+packages/core/dist/
+*.tsbuildinfo
