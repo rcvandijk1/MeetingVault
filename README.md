@@ -27,14 +27,30 @@ True journey cost                €1,905
 
 ## Quick start
 
-Requirements: Node ≥ 20, npm ≥ 10, PostgreSQL ≥ 14.
+Requirements: Node ≥ 20, npm ≥ 10, and a PostgreSQL ≥ 14 server. The database itself is created automatically on
+first start; only the server needs to exist.
 
 ```bash
-cp .env.example .env            # edit DATABASE_URL if needed
-createdb krabi_flight_radar     # and krabi_flight_radar_test for the server tests
+cp .env.example .env            # defaults: postgres://postgres:postgres@localhost:5432/krabi_flight_radar
+docker compose up -d db         # PostgreSQL in Docker (skip if you already run Postgres locally)
 npm install
 npm run dev                     # API on :4000, web on :5173 (proxies /api)
 ```
+
+Windows (PowerShell), with [Docker Desktop](https://www.docker.com/products/docker-desktop/) and Node installed:
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d db
+npm install
+npm run dev
+```
+
+No Docker? Install PostgreSQL with the [EDB installer](https://www.postgresql.org/download/windows/), note the
+password you choose for the `postgres` user, and put it in `DATABASE_URL` in `.env`
+(`postgres://postgres:YOURPASSWORD@localhost:5432/krabi_flight_radar`).
+
+Everything in one container (API + built web app on http://localhost:4000): `docker compose --profile app up --build`.
 
 Open http://localhost:5173. The default configuration uses the **mock flight provider**, which needs no credentials
 and returns deterministic, realistic itineraries (see *Mock data* below). Press **Run search now** on the Radar.

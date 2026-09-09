@@ -1,0 +1,46 @@
+# Local infrastructure for Krabi Flight Radar.
+#
+#   docker compose up -d db        # PostgreSQL only; then `npm install && npm run dev`
+#   docker compose up --build      # PostgreSQL + the app (API + web) on http://localhost:4000
+#
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: krabi_flight_radar
+    ports:
+      - '5432:5432'
+    volumes:
+      - kfr-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    profiles: ['app']
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@db:5432/krabi_flight_radar
+      PORT: '4000'
+      HOST: '0.0.0.0'
+      FLIGHT_PROVIDERS: ${FLIGHT_PROVIDERS:-mock}
+      DUFFEL_ACCESS_TOKEN: ${DUFFEL_ACCESS_TOKEN:-}
+      AMADEUS_CLIENT_ID: ${AMADEUS_CLIENT_ID:-}
+      AMADEUS_CLIENT_SECRET: ${AMADEUS_CLIENT_SECRET:-}
+      VERIFY_DATA_DIR: /data/verifications
+      PUBLIC_BASE_URL: http://127.0.0.1:4000
+    ports:
+      - '4000:4000'
+    volumes:
+      - kfr-verifications:/data/verifications
+
+volumes:
+  kfr-pgdata:
+  kfr-verifications:
