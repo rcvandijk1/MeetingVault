@@ -130,6 +130,8 @@ export interface SearchRunStats {
   searchCalls: number;
   cacheHits: number;
   providersUsed: string[];
+  /** Top-ranked journeys re-priced with their provider before presentation. */
+  repriced?: number;
   durationMs: number;
 }
 

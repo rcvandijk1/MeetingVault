@@ -31,6 +31,7 @@ const configSchema = z.object({
   PROVIDER_MIN_INTERVAL_MS: z.coerce.number().int().nonnegative().default(250),
   PROVIDER_CACHE_TTL_MINUTES: z.coerce.number().nonnegative().default(30),
   SEARCH_MAX_VALIDATION_CANDIDATES: z.coerce.number().int().positive().default(48),
+  SEARCH_REPRICE_TOP_N: z.coerce.number().int().nonnegative().default(3),
   SCHEDULER_ENABLED: bool.default('false'),
   SCHEDULER_INTERVAL_HOURS: z.coerce.number().positive().default(6),
   NOTIFICATION_PROVIDER: z.enum(['log', 'none']).default('log'),

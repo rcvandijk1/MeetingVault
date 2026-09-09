@@ -181,7 +181,11 @@ export function JourneyDetail({ journey, weights, baselineOrigin }: { journey: S
                 <dt>Observed normal range</dt>
                 <dd className="mono">{j.deal.referenceLow !== null ? `${formatEur(j.deal.referenceLow)} – ${formatEur(j.deal.referenceHigh)}` : 'no reference yet'}</dd>
                 <dt>vs reference</dt>
-                <dd className="mono">{j.deal.percentBelowReference !== null ? `${fmtPct(j.deal.percentBelowReference)} below (${j.deal.source === 'HISTORY' ? `${j.deal.comparableObservations} observations` : 'this search'})` : '—'}</dd>
+                <dd className="mono">
+                  {j.deal.percentBelowReference === null
+                    ? '—'
+                    : `${Math.abs(j.deal.percentBelowReference) < 0.5 ? 'at reference' : j.deal.percentBelowReference > 0 ? `${fmtPct(j.deal.percentBelowReference)} below` : `${fmtPct(-j.deal.percentBelowReference)} above`} (${j.deal.source === 'HISTORY' ? `${j.deal.comparableObservations} observations` : 'this search'})`}
+                </dd>
                 <dt>First seen</dt>
                 <dd className="mono">{fmtInstant(it.firstSeen)}</dd>
                 <dt>Last validated</dt>

@@ -3,7 +3,9 @@ import {
   planFromProfile,
   runPipeline,
   rescoreJourneys,
+  type NormalizedItinerary,
   type PipelineResult,
+  type ProviderFailure,
   type ScoreWeights,
   type ScoredJourney,
   type SearchOrchestrator,
@@ -22,6 +24,8 @@ export interface SearchServiceDeps {
   orchestrator: SearchOrchestrator;
   now?: () => Date;
   log?: { info: (o: unknown, msg?: string) => void; warn: (o: unknown, msg?: string) => void; error: (o: unknown, msg?: string) => void };
+  /** Number of top-ranked journeys to re-price with their provider before presenting them (0 disables). */
+  repriceTopN?: number;
 }
 
 /** Days of observation history used as the deal-intelligence reference. */
@@ -60,9 +64,16 @@ export class SearchService {
     const startedAt = this.now();
     const runId = await this.deps.repos.createRun({ profile, request: plan, trigger: args.trigger ?? 'MANUAL', startedAt });
     try {
-      const search = await this.deps.orchestrator.run(plan, { fxRatesToEur: ctx.home.fxRatesToEur, now: startedAt.toISOString() });
+      const normalize = { fxRatesToEur: ctx.home.fxRatesToEur, now: startedAt.toISOString() };
+      const search = await this.deps.orchestrator.run(plan, normalize);
       await this.deps.repos.addProviderEvents(search.usage, runId);
-      const result = runPipeline(search.itineraries, ctx);
+      let result = runPipeline(search.itineraries, ctx);
+
+      // Stage B refinement: re-price the top-ranked journeys where the provider supports it,
+      // so that the fares presented as best are freshly validated.
+      const repriced = await this.repriceTop(result, search.itineraries, normalize, runId, search.failures);
+      if (repriced.changed) result = runPipeline(repriced.itineraries, ctx);
+
       const finishedAt = this.now();
       await this.deps.repos.saveRunResults(runId, result, finishedAt);
       await this.deps.repos.saveScoreWeights(runId, profile.scoringWeights);
@@ -71,7 +82,7 @@ export class SearchService {
         finishedAt,
         providerErrors: search.failures,
         rejected: result.rejected,
-        stats: { ...result.stats, ...search.stats, durationMs: finishedAt.getTime() - startedAt.getTime() },
+        stats: { ...result.stats, ...search.stats, repriced: repriced.count, durationMs: finishedAt.getTime() - startedAt.getTime() },
       });
       if (search.failures.length > 0) this.deps.log?.warn({ runId, failures: search.failures.length }, 'search completed with provider failures');
       const run = (await this.deps.repos.getRun(runId))!;
@@ -83,6 +94,33 @@ export class SearchService {
       this.deps.log?.error({ runId, err: message }, 'search failed');
       throw err;
     }
+  }
+
+  private async repriceTop(
+    result: PipelineResult,
+    itineraries: NormalizedItinerary[],
+    normalize: { fxRatesToEur: Record<string, number>; now: string },
+    runId: string,
+    failures: ProviderFailure[],
+  ): Promise<{ itineraries: NormalizedItinerary[]; changed: boolean; count: number }> {
+    const n = this.deps.repriceTopN ?? 0;
+    if (n <= 0 || result.journeys.length === 0) return { itineraries, changed: false, count: 0 };
+    const byId = new Map(itineraries.map((it) => [it.id, it]));
+    let changed = false;
+    let count = 0;
+    for (const j of result.journeys.slice(0, n)) {
+      const original = byId.get(j.itinerary.id);
+      if (!original) continue;
+      const { itinerary: fresh, failure } = await this.deps.orchestrator.refresh(original, normalize);
+      const usage = this.deps.orchestrator.drainUsage();
+      await this.deps.repos.addProviderEvents(usage, runId);
+      if (failure) failures.push(failure);
+      if (!fresh) continue;
+      count++;
+      if (fresh.fareEur !== original.fareEur || fresh.fingerprint !== original.fingerprint) changed = true;
+      byId.set(original.id, { ...fresh, id: original.id, alternatives: original.alternatives, firstSeen: original.firstSeen, lastValidated: normalize.now });
+    }
+    return { itineraries: [...byId.values()], changed, count };
   }
 
   /** Re-scores a stored run with different weights (no provider calls). */

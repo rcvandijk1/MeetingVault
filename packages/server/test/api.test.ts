@@ -255,6 +255,15 @@ describe('search, persistence and scoring', () => {
     expect(r.body.usage24h[0]!.calls).toBeGreaterThan(0);
   });
 
+  it('re-prices the top ranked journeys before presenting them', async () => {
+    const r = await get<{ run: { stats: { repriced: number } } }>(`/api/search/${runId}`);
+    expect(r.body.run.stats.repriced).toBe(3);
+    const refreshEvents = await deps.repos.recentProviderErrors(1);
+    void refreshEvents;
+    const usage = await deps.repos.providerUsageSummary(24);
+    expect(usage[0]!.calls).toBeGreaterThan(48);
+  });
+
   it('records provider failures without failing the search', async () => {
     const failing = new MockFlightSearchProvider({ now: () => new Date(clock), failForOrigins: ['AMS'], name: 'mock-broken' });
     const svc = deps.searchService;

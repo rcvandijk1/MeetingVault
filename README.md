@@ -86,7 +86,8 @@ recorded on the run and shown in the UI.
 
 ```
 TRIP PROFILE ─▶ ORIGIN CANDIDATES ─▶ Stage A discovery (cheap-date estimates per origin × gateway)
-            ─▶ Stage B validation (bounded number of live searches, cached, rate limited)
+            ─▶ Stage B validation (bounded number of live searches, cached, rate limited;
+                                   the top SEARCH_REPRICE_TOP_N journeys are re-priced before presentation)
             ─▶ NORMALIZATION (provider → NormalizedItinerary, UTC + local times, EUR)
             ─▶ DEDUPLICATION (fingerprint = flights + times + route + cabin; other providers kept as alternatives)
             ─▶ HARD CONSTRAINTS (per direction; violations eliminate, never merely lower a score)

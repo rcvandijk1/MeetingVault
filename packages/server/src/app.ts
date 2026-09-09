@@ -46,7 +46,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<{ app: FastifyIns
     cacheTtlMs: config.PROVIDER_CACHE_TTL_MINUTES * 60000,
     now: opts.now,
   });
-  const searchService = new SearchService({ repos, orchestrator, now: opts.now, log: app.log });
+  const searchService = new SearchService({ repos, orchestrator, now: opts.now, log: app.log, repriceTopN: config.SEARCH_REPRICE_TOP_N });
   const notifier = opts.notifier ?? (config.NOTIFICATION_PROVIDER === 'log' ? new ConsoleNotificationProvider((m) => app.log.info(m)) : new NoopNotificationProvider());
   const scheduler = new Scheduler({ repos, searchService, notifier, intervalHours: config.SCHEDULER_INTERVAL_HOURS, enabled: config.SCHEDULER_ENABLED, now: opts.now, log: app.log });
   const deps: AppDeps = { config, repos, orchestrator, searchService, scheduler, notifier };

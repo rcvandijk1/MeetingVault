@@ -313,13 +313,22 @@ export class SearchOrchestrator {
     };
   }
 
+  private pendingUsage: ProviderUsageEvent[] = [];
+
+  /** Re-prices a single offer with its provider. Usage is collected and available through `drainUsage()`. */
   async refresh(itinerary: NormalizedItinerary, normalize: NormalizeOptions): Promise<{ itinerary: NormalizedItinerary | null; failure: ProviderFailure | null }> {
     const provider = this.providers.find((p) => p.name === itinerary.provider);
-    if (!provider || !provider.refreshOffer) return { itinerary: null, failure: null };
-    const usage: ProviderUsageEvent[] = [];
+    if (!provider || !provider.refreshOffer || !provider.capabilities.refresh) return { itinerary: null, failure: null };
     const failures: ProviderFailure[] = [];
-    const refreshed = await this.call(provider, 'refresh', { providerOfferId: itinerary.providerOfferId }, () => provider.refreshOffer!(itinerary.providerOfferId, normalize), (r) => (r ? 1 : 0), usage, failures);
+    const refreshed = await this.call(provider, 'refresh', { providerOfferId: itinerary.providerOfferId }, () => provider.refreshOffer!(itinerary.providerOfferId, normalize), (r) => (r ? 1 : 0), this.pendingUsage, failures);
     return { itinerary: refreshed ?? null, failure: failures[0] ?? null };
+  }
+
+  /** Returns and clears usage events recorded outside of `run()` (i.e. by `refresh()`). */
+  drainUsage(): ProviderUsageEvent[] {
+    const out = this.pendingUsage;
+    this.pendingUsage = [];
+    return out;
   }
 
   async health(): Promise<Array<Awaited<ReturnType<FlightSearchProvider['healthCheck']>>>> {
