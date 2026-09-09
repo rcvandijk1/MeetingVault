@@ -15,8 +15,10 @@ export interface SearchPlan {
   preferredTripDaysMax: number;
   maxTripDays: number;
   passengers: number;
-  cabin: Cabin;
-  feederEconomyAllowed: boolean;
+  /** Every cabin is searched separately and scored as its own requested cabin. */
+  cabins: Cabin[];
+  /** Minimum cabin for feeder / short-haul segments. */
+  feederCabin: Cabin;
   maxConnections: number;
   /** Stage B budget: number of live (origin, gateway, dates) searches. */
   maxValidationCandidates: number;
@@ -25,6 +27,7 @@ export interface SearchPlan {
 export interface Candidate {
   origin: string;
   gateway: string;
+  cabin: Cabin;
   outboundDate: string;
   returnDate: string;
   estimatedFareEur: number | null;
@@ -202,14 +205,16 @@ export class SearchOrchestrator {
       const tasks: Array<Promise<void>> = [];
       for (const origin of plan.origins) {
         for (const gateway of plan.gateways) {
-          for (const p of discoverers) {
-            const req = { origin, destination: gateway, outboundDates, returnDates, passengers: plan.passengers, cabin: plan.cabin };
-            calls++;
-            tasks.push(
-              this.call(p, 'discover', req, () => p.discover!(req), (r) => r.length, usage, failures).then((r) => {
-                if (r) estimates.push(...r);
-              }),
-            );
+          for (const cabin of plan.cabins) {
+            for (const p of discoverers) {
+              const req = { origin, destination: gateway, outboundDates, returnDates, passengers: plan.passengers, cabin };
+              calls++;
+              tasks.push(
+                this.call(p, 'discover', req, () => p.discover!(req), (r) => r.length, usage, failures).then((r) => {
+                  if (r) estimates.push(...r.map((e) => ({ ...e, cabin })));
+                }),
+              );
+            }
           }
         }
       }
@@ -217,40 +222,44 @@ export class SearchOrchestrator {
     }
     const pairSet = new Set(pairs.map((p) => `${p.outboundDate}|${p.returnDate}`));
     const byKey = new Map<string, Candidate>();
-    for (const e of estimates) {
+    for (const e of estimates as Array<DateFareEstimate & { cabin: Cabin }>) {
       if (!pairSet.has(`${e.outboundDate}|${e.returnDate}`)) continue;
-      const key = `${e.origin}|${e.destination}|${e.outboundDate}|${e.returnDate}`;
+      const key = `${e.origin}|${e.destination}|${e.cabin}|${e.outboundDate}|${e.returnDate}`;
       const existing = byKey.get(key);
       if (!existing || (existing.estimatedFareEur ?? Infinity) > e.estimatedFareEur) {
-        byKey.set(key, { origin: e.origin, gateway: e.destination, outboundDate: e.outboundDate, returnDate: e.returnDate, estimatedFareEur: e.estimatedFareEur, source: 'DISCOVERY' });
+        byKey.set(key, { origin: e.origin, gateway: e.destination, cabin: e.cabin, outboundDate: e.outboundDate, returnDate: e.returnDate, estimatedFareEur: e.estimatedFareEur, source: 'DISCOVERY' });
       }
     }
-    // Origins/gateways without discovery data still get sampled candidates so nothing is silently dropped.
+    // Origins/gateways/cabins without discovery data still get sampled candidates so nothing is silently dropped.
     for (const origin of plan.origins) {
       for (const gateway of plan.gateways) {
-        const has = [...byKey.values()].some((c) => c.origin === origin && c.gateway === gateway);
-        if (has) continue;
-        for (const pair of sampleEvenly(pairs, 4)) {
-          byKey.set(`${origin}|${gateway}|${pair.outboundDate}|${pair.returnDate}`, { origin, gateway, ...pair, estimatedFareEur: null, source: 'SAMPLED' });
+        for (const cabin of plan.cabins) {
+          const has = [...byKey.values()].some((c) => c.origin === origin && c.gateway === gateway && c.cabin === cabin);
+          if (has) continue;
+          for (const pair of sampleEvenly(pairs, 4)) {
+            byKey.set(`${origin}|${gateway}|${cabin}|${pair.outboundDate}|${pair.returnDate}`, { origin, gateway, cabin, ...pair, estimatedFareEur: null, source: 'SAMPLED' });
+          }
         }
       }
     }
     return { candidates: [...byKey.values()], datePairs: pairs.length, calls };
   }
 
-  /** Picks the Stage B candidates: guaranteed coverage per origin/gateway, then the cheapest estimates. */
-  selectCandidates(candidates: Candidate[], budget: number, origins: string[], gateways: string[]): Candidate[] {
+  /** Picks the Stage B candidates: guaranteed coverage per origin/gateway/cabin, then the cheapest estimates. */
+  selectCandidates(candidates: Candidate[], budget: number, origins: string[], gateways: string[], cabins: Cabin[] = [...new Set(candidates.map((c) => c.cabin))]): Candidate[] {
     const sorted = [...candidates].sort((a, b) => (a.estimatedFareEur ?? Infinity) - (b.estimatedFareEur ?? Infinity) || a.outboundDate.localeCompare(b.outboundDate));
     const chosen: Candidate[] = [];
     const chosenKeys = new Set<string>();
-    const key = (c: Candidate): string => `${c.origin}|${c.gateway}|${c.outboundDate}|${c.returnDate}`;
-    const perPair = Math.max(1, Math.floor(budget / Math.max(1, origins.length * gateways.length)));
+    const key = (c: Candidate): string => `${c.origin}|${c.gateway}|${c.cabin}|${c.outboundDate}|${c.returnDate}`;
+    const perPair = Math.max(1, Math.floor(budget / Math.max(1, origins.length * gateways.length * cabins.length)));
     for (const origin of origins) {
       for (const gateway of gateways) {
-        for (const c of sorted.filter((x) => x.origin === origin && x.gateway === gateway).slice(0, perPair)) {
-          if (chosen.length >= budget) break;
-          chosenKeys.add(key(c));
-          chosen.push(c);
+        for (const cabin of cabins) {
+          for (const c of sorted.filter((x) => x.origin === origin && x.gateway === gateway && x.cabin === cabin).slice(0, perPair)) {
+            if (chosen.length >= budget) break;
+            chosenKeys.add(key(c));
+            chosen.push(c);
+          }
         }
       }
     }
@@ -271,9 +280,9 @@ export class SearchOrchestrator {
     const nowMs = this.now().getTime();
     const tasks: Array<Promise<void>> = [];
     for (const c of candidates) {
-      const req: FlightSearchRequest = { origin: c.origin, destination: c.gateway, outboundDate: c.outboundDate, returnDate: c.returnDate, passengers: plan.passengers, cabin: plan.cabin, feederEconomyAllowed: plan.feederEconomyAllowed, maxConnections: plan.maxConnections };
+      const req: FlightSearchRequest = { origin: c.origin, destination: c.gateway, outboundDate: c.outboundDate, returnDate: c.returnDate, passengers: plan.passengers, cabin: c.cabin, feederCabin: plan.feederCabin, maxConnections: plan.maxConnections };
       for (const p of this.providers) {
-        const cacheKey = `${p.name}|${req.origin}|${req.destination}|${req.outboundDate}|${req.returnDate}|${req.cabin}|${req.passengers}|${req.maxConnections}`;
+        const cacheKey = `${p.name}|${req.origin}|${req.destination}|${req.outboundDate}|${req.returnDate}|${req.cabin}|${req.feederCabin}|${req.passengers}|${req.maxConnections}`;
         const cached = this.cache.get(cacheKey);
         if (cached && nowMs - cached.at < this.cacheTtl) {
           cacheHits++;
@@ -302,7 +311,7 @@ export class SearchOrchestrator {
     const usage: ProviderUsageEvent[] = [];
     const failures: ProviderFailure[] = [];
     const discovery = await this.discover(plan, usage, failures);
-    const selected = this.selectCandidates(discovery.candidates, plan.maxValidationCandidates, plan.origins, plan.gateways);
+    const selected = this.selectCandidates(discovery.candidates, plan.maxValidationCandidates, plan.origins, plan.gateways, plan.cabins);
     const validation = await this.validate(plan, selected, normalize, usage, failures);
     return {
       itineraries: validation.itineraries,

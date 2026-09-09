@@ -255,6 +255,16 @@ describe('search, persistence and scoring', () => {
     expect(r.body.usage24h[0]!.calls).toBeGreaterThan(0);
   });
 
+  it('searches several cabins at once and requires the feeder class when asked', async () => {
+    const r = await send<{ journeys: ScoredJourney[] }>('POST', '/api/search', { overrides: { passengers: 1, cabins: ['ECONOMY', 'BUSINESS'], feederMinCabin: 'BUSINESS', enabledOrigins: ['AMS', 'DUS'] } });
+    expect(r.status).toBe(201);
+    const cabins = new Set(r.body.journeys.map((j) => j.itinerary.cabinSummary.requestedCabin));
+    expect(cabins).toEqual(new Set(['ECONOMY', 'BUSINESS']));
+    const biz = r.body.journeys.filter((j) => j.itinerary.cabinSummary.requestedCabin === 'BUSINESS');
+    expect(biz.every((j) => j.itinerary.cabinSummary.premiumCabinPercent === 100)).toBe(true);
+    expect(biz.filter((j) => j.baseline.isBaseline)).toHaveLength(1);
+  });
+
   it('re-prices the top ranked journeys before presenting them', async () => {
     const r = await get<{ run: { stats: { repriced: number } } }>(`/api/search/${runId}`);
     expect(r.body.run.stats.repriced).toBe(3);

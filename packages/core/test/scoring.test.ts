@@ -136,7 +136,7 @@ describe('deal intelligence', () => {
   it('uses the application history as reference when enough observations exist', () => {
     const it = amsDohKbv({ fare: 1690 });
     const history: FareObservation[] = [2400, 2500, 2600, 2700, 2800].map((fare, i) => ({ observedAt: `2026-09-0${i + 1}T00:00:00Z`, originAirport: 'AMS', arrivalGateway: 'KBV', outboundDate: '2027-01-20', inboundDate: '2027-02-08', airline: 'QR', cabin: 'BUSINESS', fare, currency: 'EUR', fareEur: fare, provider: 'mock', itineraryFingerprint: 'x' }));
-    const deal = assessDeal(it, [it], history, DEFAULT_DEAL_THRESHOLDS, { longHaulCabin: 'BUSINESS' });
+    const deal = assessDeal(it, [it], history, DEFAULT_DEAL_THRESHOLDS);
     expect(deal.source).toBe('HISTORY');
     expect(deal.referenceFare).toBe(2600);
     expect(deal.referenceLow).toBe(2500);
@@ -148,7 +148,7 @@ describe('deal intelligence', () => {
   it('falls back to the search distribution without history', () => {
     const cheap = amsDohKbv({ id: 'cheap', fare: 1200 });
     const set = [cheap, amsDohKbv({ id: 'b', fare: 2000, depTime: '15:55' }), amsDohKbv({ id: 'c', fare: 2100, depTime: '10:00' }), amsDohKbv({ id: 'd', fare: 2200, depTime: '11:00' })];
-    const deal = assessDeal(cheap, set, [], DEFAULT_DEAL_THRESHOLDS, { longHaulCabin: 'BUSINESS' });
+    const deal = assessDeal(cheap, set, [], DEFAULT_DEAL_THRESHOLDS);
     expect(deal.source).toBe('SEARCH_DISTRIBUTION');
     expect(deal.percentBelowReference).toBeGreaterThan(40);
     expect(deal.level).toBe('INSANE');

@@ -37,7 +37,6 @@ export function ProfileForm({ value, onChange, showName = true }: { value: TripP
           {showName && <TextField label="Profile name" value={value.name} onChange={(v) => set('name', v)} testId="profile-name" />}
           <div className="form-grid">
             <NumberField label="Passengers" value={value.passengers} min={1} max={9} onChange={(v) => set('passengers', v)} testId="profile-passengers" />
-            <SelectField label="Long-haul cabin" value={value.longHaulCabin} options={CABINS.map((c) => ({ value: c, label: cabinLabel(c as Cabin) }))} onChange={(v) => set('longHaulCabin', v)} testId="profile-cabin" />
             <TextField label="Outbound earliest" type="date" value={value.outboundEarliestDate} onChange={(v) => set('outboundEarliestDate', v)} testId="profile-outbound-earliest" />
             <TextField label="Outbound latest" type="date" value={value.outboundLatestDate} onChange={(v) => set('outboundLatestDate', v)} testId="profile-outbound-latest" />
             <TextField label="Return earliest" type="date" value={value.returnEarliestDate} onChange={(v) => set('returnEarliestDate', v)} testId="profile-return-earliest" />
@@ -48,10 +47,21 @@ export function ProfileForm({ value, onChange, showName = true }: { value: TripP
             <NumberField label="Max trip days" value={value.maxTripDays} min={1} onChange={(v) => set('maxTripDays', v)} />
             <NumberField label="Live validation budget (searches per run)" value={value.maxValidationCandidates} min={1} max={500} onChange={(v) => set('maxValidationCandidates', v)} hint="Upper bound of Stage B provider searches" />
           </div>
+          <div className="grid grid-2">
+            <Field label="Flight classes to search (each is searched and ranked separately)">
+              <Chips
+                options={CABINS as Cabin[]}
+                selected={value.cabins}
+                labels={Object.fromEntries(CABINS.map((c) => [c, cabinLabel(c as Cabin)]))}
+                onToggle={(c) => set('cabins', value.cabins.includes(c) ? (value.cabins.length > 1 ? value.cabins.filter((x) => x !== c) : value.cabins) : [...value.cabins, c])}
+              />
+            </Field>
+            <SelectField label="Minimum class on feeder / short-haul flights" value={value.feederMinCabin} options={CABINS.map((c) => ({ value: c, label: cabinLabel(c as Cabin) }))} onChange={(v) => set('feederMinCabin', v)} testId="profile-feeder-cabin" />
+          </div>
           <div className="row">
-            <Check label="Economy feeder flights allowed" checked={value.feederEconomyAllowed} onChange={(v) => set('feederEconomyAllowed', v)} testId="profile-feeder-economy" />
             <Check label="Mixed-cabin itineraries allowed" checked={value.mixedCabinAllowed} onChange={(v) => set('mixedCabinAllowed', v)} />
           </div>
+          <p className="tiny muted">Long-haul flights must be in the searched class; feeder flights may be lower down to the minimum you set here. Set the minimum equal to the searched class to require it on every flight.</p>
         </div>
       )}
 

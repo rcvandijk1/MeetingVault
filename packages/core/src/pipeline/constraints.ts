@@ -87,13 +87,19 @@ export function evaluateHardConstraints(it: NormalizedItinerary, ctx: PipelineCo
     reasons.push(`Return date ${localDate(it.inbound.departureLocal)} is outside the return window`);
   }
 
-  // Cabin
+  // Cabin: the itinerary was searched for `requestedCabin`; long-haul segments must be in it,
+  // feeder segments must be at least the profile's minimum feeder cabin.
   const cs = it.cabinSummary;
-  if (cs.longHaulPremiumPercent < 100) {
-    reasons.push(`Long-haul cabin below requested ${profile.longHaulCabin}`);
+  if (!profile.cabins.includes(cs.requestedCabin)) {
+    reasons.push(`Cabin ${cs.requestedCabin} is not selected in the profile`);
   }
-  if (!profile.feederEconomyAllowed && CABIN_RANK[cs.lowestCabin] < CABIN_RANK[profile.longHaulCabin]) {
-    reasons.push(`Feeder segment in ${cs.lowestCabin} is not allowed`);
+  if (cs.longHaulPremiumPercent < 100) {
+    reasons.push(`Long-haul cabin below requested ${cs.requestedCabin}`);
+  }
+  const feederMin = CABIN_RANK[profile.feederMinCabin] > CABIN_RANK[cs.requestedCabin] ? cs.requestedCabin : profile.feederMinCabin;
+  const badFeeder = it.segments.find((s) => s.durationMinutes < profile.scoringParams.longHaulMinMinutes && CABIN_RANK[s.cabin] < CABIN_RANK[feederMin]);
+  if (badFeeder) {
+    reasons.push(`Feeder ${badFeeder.origin} → ${badFeeder.destination} in ${badFeeder.cabin} is below the minimum feeder cabin ${feederMin}`);
   }
   if (!profile.mixedCabinAllowed && cs.mixedCabin) {
     reasons.push('Mixed-cabin itineraries are not allowed');

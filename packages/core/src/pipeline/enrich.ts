@@ -91,6 +91,8 @@ export function computeGroundTransfer(gatewayCode: string, transfers: GroundTran
 
 export function computeTrueCost(args: {
   airfareEur: number;
+  /** Final price from the booking flow / pricing API, when verified. */
+  verifiedFareEur?: number | null;
   access: OriginAccessResult;
   hotelOutbound: HotelDecision;
   hotelReturn: HotelDecision;
@@ -99,8 +101,10 @@ export function computeTrueCost(args: {
   other?: number;
 }): CostBreakdown {
   const other = args.other ?? 0;
+  const verified = args.verifiedFareEur !== undefined && args.verifiedFareEur !== null;
   const parts = {
     airfare: round2(args.airfareEur),
+    bookingFees: verified ? round2(args.verifiedFareEur! - args.airfareEur) : 0,
     accessOutbound: args.access.costPerDirection,
     accessReturn: args.access.costPerDirection,
     hotelOutbound: args.hotelOutbound.required ? args.hotelOutbound.cost : 0,
@@ -111,7 +115,7 @@ export function computeTrueCost(args: {
     other,
   };
   const trueJourneyCost = round2(Object.values(parts).reduce((s, v) => s + v, 0));
-  return { ...parts, trueJourneyCost };
+  return { ...parts, fareVerified: verified, trueJourneyCost };
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +230,7 @@ export function enrichJourney(it: NormalizedItinerary, ctx: PipelineContext): En
   const ret = computeReturnTimeline(it, ctx, returnAccess, hotelRet0, groundRet);
   const cost = computeTrueCost({
     airfareEur: it.fareEur,
+    verifiedFareEur: it.verifiedFare?.amountEur ?? null,
     access: { ...access, costPerDirection: access.costPerDirection },
     hotelOutbound: out.hotel,
     hotelReturn: ret.hotel,

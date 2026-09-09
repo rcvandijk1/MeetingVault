@@ -113,18 +113,21 @@ export class MockFlightSearchProvider implements FlightSearchProvider {
     return Math.round(perPax * passengers);
   }
 
-  private buildSegments(segments: TemplateSegment[], date: string, cabin: Cabin, feederEconomyAllowed: boolean): FlightSegment[] {
+  private buildSegments(segments: TemplateSegment[], date: string, cabin: Cabin, feederCabin: Cabin): FlightSegment[] {
     return segments.map((s) => {
       const originTz = AIRPORT_INDEX[s.origin]?.timezone ?? 'UTC';
       const destTz = AIRPORT_INDEX[s.destination]?.timezone ?? 'UTC';
       const depLocal = `${addDays(date, s.depDayOffset)}T${s.depTime}`;
       const depUtc = localToUtcIso(depLocal, originTz);
       const arrUtc = addMinutesUtc(depUtc, s.durationMinutes);
-      // Cabin: economy request → all economy; premium request → template cabin, feeder may be economy.
+      // Cabin: long-haul segments fly in the requested cabin; template feeder segments in the
+      // higher of their template cabin and the minimum feeder cabin (capped at the requested cabin).
       let segCabin: Cabin;
-      if (CABIN_RANK[cabin] === 0) segCabin = 'ECONOMY';
-      else if (s.premiumCabin === 'ECONOMY') segCabin = feederEconomyAllowed ? 'ECONOMY' : cabin;
-      else segCabin = cabin;
+      if (s.premiumCabin === 'ECONOMY') {
+        segCabin = CABIN_RANK[feederCabin] > CABIN_RANK[cabin] ? cabin : feederCabin;
+      } else {
+        segCabin = cabin;
+      }
       return {
         origin: s.origin,
         destination: s.destination,
@@ -147,7 +150,7 @@ export class MockFlightSearchProvider implements FlightSearchProvider {
 
   private build(t: RouteTemplate, req: FlightSearchRequest, opts: NormalizeOptions): NormalizedItinerary {
     const fare = this.fareFor(t, req.outboundDate, req.returnDate, req.cabin, req.passengers);
-    const offerId = ['mock', t.id, req.outboundDate, req.returnDate, req.cabin, req.passengers].join('|');
+    const offerId = ['mock', t.id, req.outboundDate, req.returnDate, req.cabin, req.passengers, req.feederCabin].join('|');
     const expires = new Date(this.now().getTime() + 30 * 60000).toISOString();
     return buildItinerary(
       {
@@ -155,8 +158,8 @@ export class MockFlightSearchProvider implements FlightSearchProvider {
         providerOfferId: offerId,
         fare,
         currency: t.currency ?? 'EUR',
-        outboundSegments: this.buildSegments(t.outbound, req.outboundDate, req.cabin, req.feederEconomyAllowed),
-        inboundSegments: this.buildSegments(t.inbound, req.returnDate, req.cabin, req.feederEconomyAllowed),
+        outboundSegments: this.buildSegments(t.outbound, req.outboundDate, req.cabin, req.feederCabin),
+        inboundSegments: this.buildSegments(t.inbound, req.returnDate, req.cabin, req.feederCabin),
         requestedCabin: req.cabin,
         providerExpiresAt: expires,
         rawProviderReference: { template: t.id, note: t.note },
@@ -191,10 +194,10 @@ export class MockFlightSearchProvider implements FlightSearchProvider {
 
   async refreshOffer(providerOfferId: string, opts: NormalizeOptions): Promise<NormalizedItinerary | null> {
     this.calls++;
-    const [prefix, templateId, outboundDate, returnDate, cabin, pax] = providerOfferId.split('|');
+    const [prefix, templateId, outboundDate, returnDate, cabin, pax, feeder] = providerOfferId.split('|');
     if (prefix !== 'mock' || !templateId || !outboundDate || !returnDate || !cabin || !pax) return null;
     const t = [...this.templates, ...this.synthesize(templateId.split('-')[0] ?? '', templateId.includes('HKT') ? 'HKT' : 'KBV')].find((x) => x.id === templateId);
     if (!t) return null;
-    return this.build(t, { origin: t.origin, destination: t.gateway, outboundDate, returnDate, passengers: Number(pax), cabin: cabin as Cabin, feederEconomyAllowed: true, maxConnections: 3 }, opts);
+    return this.build(t, { origin: t.origin, destination: t.gateway, outboundDate, returnDate, passengers: Number(pax), cabin: cabin as Cabin, feederCabin: (feeder as Cabin | undefined) ?? 'ECONOMY', maxConnections: 3 }, opts);
   }
 }

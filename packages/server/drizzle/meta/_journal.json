@@ -8,6 +8,20 @@
       "when": 1788932421824,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788935461870,
+      "tag": "0001_cabins_and_verifications",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788935481007,
+      "tag": "0002_drop_legacy_cabin_columns",
+      "breakpoints": true
     }
   ]
 }

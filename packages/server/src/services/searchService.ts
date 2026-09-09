@@ -51,7 +51,7 @@ export class SearchService {
       repos.listOrigins(),
       repos.listGateways(),
       repos.listGroundTransfers(),
-      repos.queryObservations({ cabin: profile.longHaulCabin, sinceDays: HISTORY_WINDOW_DAYS }),
+      repos.queryObservations({ sinceDays: HISTORY_WINDOW_DAYS }).then((obs) => obs.filter((o) => profile.cabins.includes(o.cabin))),
     ]);
     return buildPipelineContext({ profile, home: settings.home, airports, originProfiles, gateways, groundTransfers, history, dealThresholds: settings.dealThresholds, now: this.now().toISOString() });
   }

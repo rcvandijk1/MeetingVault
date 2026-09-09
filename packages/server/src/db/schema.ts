@@ -1,5 +1,6 @@
 import { boolean, index, integer, jsonb, pgTable, real, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
 import type {
+  Cabin,
   AlertThresholds,
   DealLevel,
   DealThresholds,
@@ -101,8 +102,8 @@ export const tripProfiles = pgTable('trip_profiles', {
   preferredTripDaysMin: integer('preferred_trip_days_min').notNull(),
   preferredTripDaysMax: integer('preferred_trip_days_max').notNull(),
   maxTripDays: integer('max_trip_days').notNull(),
-  longHaulCabin: varchar('long_haul_cabin', { length: 16 }).notNull(),
-  feederEconomyAllowed: boolean('feeder_economy_allowed').notNull(),
+  cabins: jsonb('cabins').$type<Cabin[]>().notNull(),
+  feederMinCabin: varchar('feeder_min_cabin', { length: 16 }).notNull(),
   mixedCabinAllowed: boolean('mixed_cabin_allowed').notNull(),
   outboundConstraints: jsonb('outbound_constraints').$type<TransferConstraints>().notNull(),
   returnConstraints: jsonb('return_constraints').$type<TransferConstraints>().notNull(),
@@ -288,6 +289,48 @@ export const providerOfferReferences = pgTable(
     raw: jsonb('raw').$type<unknown>(),
   },
   (t) => [index('provider_offer_refs_itinerary_idx').on(t.itineraryId)],
+);
+
+export type VerificationStatus = 'QUEUED' | 'RUNNING' | 'VERIFIED' | 'FAILED' | 'UNSUPPORTED';
+
+export interface VerificationStep {
+  name: string;
+  at: string;
+  ok: boolean;
+  url?: string | null;
+  screenshot?: string | null;
+  note?: string | null;
+}
+
+/**
+ * Asynchronous final-price verification: a driver walks the booking flow of the
+ * selling channel up to (never through) the payment step and records the total.
+ */
+export const priceVerifications = pgTable(
+  'price_verifications',
+  {
+    id: text('id').primaryKey(),
+    itineraryId: text('itinerary_id')
+      .notNull()
+      .references(() => itineraries.id, { onDelete: 'cascade' }),
+    searchRunId: text('search_run_id').references(() => searchRuns.id, { onDelete: 'set null' }),
+    status: varchar('status', { length: 16 }).notNull(),
+    driver: varchar('driver', { length: 48 }),
+    priority: integer('priority').notNull().default(0),
+    attempts: integer('attempts').notNull().default(0),
+    requestedAt: timestamp('requested_at', { withTimezone: true }).notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }),
+    finishedAt: timestamp('finished_at', { withTimezone: true }),
+    quotedFare: real('quoted_fare').notNull(),
+    quotedCurrency: varchar('quoted_currency', { length: 3 }).notNull(),
+    finalPrice: real('final_price'),
+    finalCurrency: varchar('final_currency', { length: 3 }),
+    finalPriceEur: real('final_price_eur'),
+    breakdown: jsonb('breakdown').$type<Array<{ label: string; amount: number }>>().notNull().default([]),
+    steps: jsonb('steps').$type<VerificationStep[]>().notNull().default([]),
+    error: text('error'),
+  },
+  (t) => [index('price_verifications_run_idx').on(t.searchRunId), index('price_verifications_itinerary_idx').on(t.itineraryId), index('price_verifications_status_idx').on(t.status, t.priority)],
 );
 
 /** API usage and failure log for cost visibility and provider health. */

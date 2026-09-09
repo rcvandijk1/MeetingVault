@@ -102,7 +102,7 @@ export function ProfilesPage() {
                     {p.name} {p.isDefault && <Star size={12} color="var(--c-warn)" />}
                   </div>
                   <div className="tiny muted">
-                    {p.outboundEarliestDate} → {p.returnLatestDate} · {cabinLabel(p.longHaulCabin)} · {p.enabledOrigins.length} origins
+                    {p.outboundEarliestDate} → {p.returnLatestDate} · {p.cabins.map(cabinLabel).join(' + ')} · {p.enabledOrigins.length} origins
                   </div>
                 </div>
               </div>

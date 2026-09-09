@@ -50,7 +50,7 @@ describe('Duffel adapter', () => {
   it('sends a v2 offer request and normalises offers without leaking provider shapes', async () => {
     const fetch = fakeFetch((url) => (url.includes('/air/offer_requests') ? { status: 200, body: { data: { id: 'orq_1', offers: [duffelOffer] } } } : { status: 404, body: {} }));
     const p = new DuffelFlightSearchProvider({ accessToken: 'test', fetch, airportTimezones: tz, now: () => new Date(NOW) });
-    const res = await p.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 1, cabin: 'BUSINESS', feederEconomyAllowed: true, maxConnections: 2 }, { fxRatesToEur: FX, now: NOW });
+    const res = await p.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 1, cabin: 'BUSINESS', feederCabin: 'ECONOMY', maxConnections: 2 }, { fxRatesToEur: FX, now: NOW });
     expect(fetch.calls[0]!.init?.headers?.['Duffel-Version']).toBe('v2');
     expect(fetch.calls[0]!.init?.headers?.['Authorization']).toBe('Bearer test');
     const body = JSON.parse(fetch.calls[0]!.init!.body!) as { data: { slices: unknown[]; cabin_class: string; passengers: unknown[] } };
@@ -72,7 +72,7 @@ describe('Duffel adapter', () => {
     const p = new DuffelFlightSearchProvider({ accessToken: undefined, fetch: fakeFetch(() => ({ status: 500, body: {} })), airportTimezones: tz });
     expect((await p.healthCheck()).configured).toBe(false);
     const failing = new DuffelFlightSearchProvider({ accessToken: 'x', fetch: fakeFetch(() => ({ status: 429, body: { errors: [{ title: 'rate limited' }] } })), airportTimezones: tz });
-    await expect(failing.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 1, cabin: 'BUSINESS', feederEconomyAllowed: true, maxConnections: 2 }, { fxRatesToEur: FX })).rejects.toThrow(/HTTP 429/);
+    await expect(failing.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 1, cabin: 'BUSINESS', feederCabin: 'ECONOMY', maxConnections: 2 }, { fxRatesToEur: FX })).rejects.toThrow(/HTTP 429/);
   });
 });
 
@@ -100,7 +100,7 @@ describe('Amadeus adapter', () => {
       return { status: 404, body: {} };
     });
     const p = new AmadeusFlightSearchProvider({ clientId: 'id', clientSecret: 'secret', fetch, airportTimezones: tz, now: () => new Date(NOW) });
-    const res = await p.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 1, cabin: 'BUSINESS', feederEconomyAllowed: true, maxConnections: 2 }, { fxRatesToEur: FX, now: NOW });
+    const res = await p.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 1, cabin: 'BUSINESS', feederCabin: 'ECONOMY', maxConnections: 2 }, { fxRatesToEur: FX, now: NOW });
     expect(res).toHaveLength(1);
     expect(res[0]!.currency).toBe('USD');
     expect(res[0]!.fareEur).toBe(1380);
@@ -124,7 +124,7 @@ describe('Amadeus adapter', () => {
 describe('Mock provider', () => {
   it('refreshes an offer by id deterministically', async () => {
     const p = new MockFlightSearchProvider({ now: () => new Date(NOW) });
-    const [it] = await p.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 1, cabin: 'BUSINESS', feederEconomyAllowed: true, maxConnections: 2 }, { fxRatesToEur: FX, now: NOW });
+    const [it] = await p.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 1, cabin: 'BUSINESS', feederCabin: 'ECONOMY', maxConnections: 2 }, { fxRatesToEur: FX, now: NOW });
     const again = await p.refreshOffer(it!.providerOfferId, { fxRatesToEur: FX, now: NOW });
     expect(again?.fingerprint).toBe(it!.fingerprint);
     expect(again?.fareEur).toBe(it!.fareEur);
@@ -132,7 +132,7 @@ describe('Mock provider', () => {
 
   it('downgrades every segment to economy for economy requests', async () => {
     const p = new MockFlightSearchProvider({ now: () => new Date(NOW) });
-    const res = await p.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 2, cabin: 'ECONOMY', feederEconomyAllowed: true, maxConnections: 2 }, { fxRatesToEur: FX, now: NOW });
+    const res = await p.search({ origin: 'AMS', destination: 'KBV', outboundDate: '2027-01-20', returnDate: '2027-02-08', passengers: 2, cabin: 'ECONOMY', feederCabin: 'ECONOMY', maxConnections: 2 }, { fxRatesToEur: FX, now: NOW });
     expect(res.every((it) => it.segments.every((s) => s.cabin === 'ECONOMY'))).toBe(true);
     expect(res[0]!.fareEur).toBeLessThan(1500);
   });

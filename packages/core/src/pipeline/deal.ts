@@ -1,4 +1,4 @@
-import type { DealAssessment, DealLevel, DealThresholds, FareObservation, NormalizedItinerary, TripProfile } from '../types.js';
+import type { DealAssessment, DealLevel, DealThresholds, FareObservation, NormalizedItinerary } from '../types.js';
 
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return NaN;
@@ -26,8 +26,8 @@ export const MIN_HISTORY_OBSERVATIONS = 5;
  * origin+gateway first, then any origin), and otherwise from the fare
  * distribution of the current search. Marketing "was/now" prices are never used.
  */
-export function assessDeal(it: NormalizedItinerary, set: NormalizedItinerary[], history: FareObservation[], thresholds: DealThresholds, profile: Pick<TripProfile, 'longHaulCabin'>): DealAssessment {
-  const cabin = profile.longHaulCabin;
+export function assessDeal(it: NormalizedItinerary, set: NormalizedItinerary[], history: FareObservation[], thresholds: DealThresholds): DealAssessment {
+  const cabin = it.cabinSummary.requestedCabin;
   const sameCabin = history.filter((h) => h.cabin === cabin);
   const sameRoute = sameCabin.filter((h) => h.originAirport === it.originAirport && h.arrivalGateway === it.arrivalGateway);
   let sample: number[] = [];

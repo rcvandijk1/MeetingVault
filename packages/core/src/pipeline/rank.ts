@@ -51,6 +51,18 @@ export function rankJourneys(input: ScoredJourney[], opts: RankOptions): ScoredJ
   journeys.forEach((j, i) => (j.rank = i + 1));
   if (journeys.length === 0) return journeys;
 
+  // Baseline comparison and labels are computed per requested cabin: comparing a
+  // business fare with an economy baseline would be meaningless.
+  for (const cabin of new Set(journeys.map((j) => j.itinerary.cabinSummary.requestedCabin))) {
+    applyBaselineAndLabels(
+      journeys.filter((j) => j.itinerary.cabinSummary.requestedCabin === cabin),
+      opts,
+    );
+  }
+  return journeys;
+}
+
+function applyBaselineAndLabels(journeys: ScoredJourney[], opts: RankOptions): void {
   // Baseline selection: best low-friction itinerary from the baseline origin
   // (no hotel, no self-transfer), then any baseline-origin itinerary, then the
   // best low-friction itinerary overall, then simply the best overall.
@@ -95,5 +107,4 @@ export function rankJourneys(input: ScoredJourney[], opts: RankOptions): ScoredJ
   push(baselineCandidates[0], 'BEST_BASELINE_ORIGIN');
   push(journeys.find((j) => j.itinerary.originAirport !== opts.baselineOrigin), 'BEST_ALTERNATIVE_ORIGIN');
   for (const j of journeys) if (j.baseline.dominant) push(j, 'DOMINANT');
-  return journeys;
 }

@@ -42,7 +42,7 @@ export function runPipeline(itineraries: NormalizedItinerary[], ctx: PipelineCon
   const stats = enriched.length > 0 ? computeSetStats(enriched, ctx.profile.scoringParams) : { bestTrueCost: 0, bestActiveBurden: 0 };
 
   const scored: ScoredJourney[] = enriched.map((j) => {
-    const deal = assessDeal(j.itinerary, accepted, ctx.history, ctx.dealThresholds, ctx.profile);
+    const deal = assessDeal(j.itinerary, accepted, ctx.history, ctx.dealThresholds);
     const cs = scoreCategories(j, stats, ctx, deal);
     return {
       ...j,
@@ -60,11 +60,15 @@ export function runPipeline(itineraries: NormalizedItinerary[], ctx: PipelineCon
     };
   });
 
-  const pareto = paretoAnalysis(scored.map((j) => ({ id: j.itinerary.id, cost: j.cost.trueJourneyCost, minutes: j.totalActiveTravelBurdenMinutes, convenience: j.convenienceScore })));
-  for (const j of scored) {
-    const by = pareto.get(j.itinerary.id) ?? null;
-    j.paretoDominated = by !== null;
-    j.dominatedBy = by;
+  // Pareto dominance is only meaningful within the same requested cabin (economy always "dominates" business on cost).
+  for (const cabin of new Set(scored.map((j) => j.itinerary.cabinSummary.requestedCabin))) {
+    const group = scored.filter((j) => j.itinerary.cabinSummary.requestedCabin === cabin);
+    const pareto = paretoAnalysis(group.map((j) => ({ id: j.itinerary.id, cost: j.cost.trueJourneyCost, minutes: j.totalActiveTravelBurdenMinutes, convenience: j.convenienceScore })));
+    for (const j of group) {
+      const by = pareto.get(j.itinerary.id) ?? null;
+      j.paretoDominated = by !== null;
+      j.dominatedBy = by;
+    }
   }
 
   const journeys = rankJourneys(scored, { weights: ctx.profile.scoringWeights, baselineOrigin: ctx.profile.baselineOrigin });

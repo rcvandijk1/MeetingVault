@@ -251,8 +251,10 @@ export interface TripProfile {
   preferredTripDaysMin: number;
   preferredTripDaysMax: number;
   maxTripDays: number;
-  longHaulCabin: Cabin;
-  feederEconomyAllowed: boolean;
+  /** Cabins to search; each produces its own provider requests and is scored as its own "requested cabin". */
+  cabins: Cabin[];
+  /** Minimum acceptable cabin on feeder / short-haul segments (long-haul segments must always be in the requested cabin). */
+  feederMinCabin: Cabin;
   mixedCabinAllowed: boolean;
   outboundConstraints: TransferConstraints;
   returnConstraints: TransferConstraints;
@@ -348,6 +350,17 @@ export interface ProviderFareAlternative {
   providerExpiresAt: string | null;
 }
 
+/** Final price established by walking the booking flow up to (not through) payment, or by a pricing API. */
+export interface VerifiedFare {
+  amount: number;
+  currency: string;
+  amountEur: number;
+  verifiedAt: string;
+  /** e.g. "booking-flow:mock-airline", "api:duffel" */
+  source: string;
+  breakdown: Array<{ label: string; amount: number }>;
+}
+
 export interface NormalizedItinerary {
   id: string;
   provider: string;
@@ -356,6 +369,8 @@ export interface NormalizedItinerary {
   currency: string;
   /** Fare converted to EUR (the internal currency). */
   fareEur: number;
+  /** Set once the booking flow / pricing API has confirmed the final price. */
+  verifiedFare?: VerifiedFare | null;
   outbound: ItineraryLeg;
   inbound: ItineraryLeg;
   cabinSummary: CabinSummary;
@@ -390,8 +405,8 @@ export interface FlightSearchRequest {
   returnDate: string;
   passengers: number;
   cabin: Cabin;
-  /** Allow feeder segments in economy even when a premium long-haul cabin is requested. */
-  feederEconomyAllowed: boolean;
+  /** Minimum cabin for feeder / short-haul segments. */
+  feederCabin: Cabin;
   maxConnections: number;
 }
 
@@ -447,7 +462,12 @@ export interface GroundTransferResult {
 }
 
 export interface CostBreakdown {
+  /** Quoted airfare (EUR). */
   airfare: number;
+  /** Difference between the verified final price and the quoted fare (0 while unverified). */
+  bookingFees: number;
+  /** True when `bookingFees` comes from a verified final price. */
+  fareVerified: boolean;
   accessOutbound: number;
   accessReturn: number;
   hotelOutbound: number;
