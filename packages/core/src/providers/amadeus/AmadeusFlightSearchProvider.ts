@@ -81,7 +81,15 @@ export class AmadeusFlightSearchProvider implements FlightSearchProvider {
 
   async healthCheck(): Promise<ProviderHealth> {
     const checkedAt = this.now().toISOString();
-    if (!this.configured) return { provider: this.name, ok: false, configured: false, message: 'AMADEUS_CLIENT_ID / AMADEUS_CLIENT_SECRET not set', checkedAt };
+    if (!this.configured) {
+      return {
+        provider: this.name,
+        ok: false,
+        configured: false,
+        message: 'AMADEUS_CLIENT_ID / AMADEUS_CLIENT_SECRET not set. Note: the Amadeus Self-Service portal was decommissioned in July 2026; this adapter now requires Amadeus Enterprise API credentials (commercial contract).',
+        checkedAt,
+      };
+    }
     try {
       await this.accessToken();
       return { provider: this.name, ok: true, configured: true, message: 'Amadeus OAuth token obtained', checkedAt };

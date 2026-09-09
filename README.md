@@ -87,7 +87,7 @@ server; the browser only ever sees provider *names* and health.
 | Provider | Endpoints used | Notes |
 | --- | --- | --- |
 | Duffel (v2) | `POST /air/offer_requests?return_offers=true`, `GET /air/offers/{id}` | Header `Duffel-Version: v2`. Local departure times + airport time zones from the response. |
-| Amadeus Self-Service | `POST /v1/security/oauth2/token`, `GET /v2/shopping/flight-offers`, `POST /v1/shopping/flight-offers/pricing`, `GET /v1/shopping/flight-dates` (Stage A discovery) | `AMADEUS_BASE_URL` selects sandbox (`test.api.amadeus.com`) or production. |
+| Amadeus | `POST /v1/security/oauth2/token`, `GET /v2/shopping/flight-offers`, `POST /v1/shopping/flight-offers/pricing`, `GET /v1/shopping/flight-dates` (Stage A discovery) | **Enterprise credentials only.** The Self-Service developer portal was decommissioned in July 2026; without a commercial Amadeus contract this adapter cannot be used. Duffel is the practical live provider for a personal tool. |
 
 The adapters were written against the official SDK contracts (`@duffel/api` 4.28, `amadeus` 11) because the
 documentation sites were not reachable from the build environment. Both adapters are covered by unit tests with
