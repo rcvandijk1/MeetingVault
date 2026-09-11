@@ -1,7 +1,7 @@
-import type { DealLevel, ScoredJourney } from '@kfr/core';
+import type { CabinQualityLabel, DealLevel, FareConfidence, ScoredJourney } from '@kfr/core';
 import { routeKey } from './format';
 
-export type SortKey = 'score' | 'airfare' | 'trueCost' | 'doorToDoor' | 'departure' | 'arrival' | 'savingPerExtraHour';
+export type SortKey = 'score' | 'airfare' | 'trueCost' | 'doorToDoor' | 'departure' | 'arrival' | 'savingPerExtraHour' | 'dealScore' | 'percentOfMedian' | 'savingVsMedian';
 
 export const SORT_OPTIONS: Array<{ key: SortKey; label: string }> = [
   { key: 'score', label: 'Overall score' },
@@ -11,6 +11,9 @@ export const SORT_OPTIONS: Array<{ key: SortKey; label: string }> = [
   { key: 'departure', label: 'Departure time' },
   { key: 'arrival', label: 'Arrival time' },
   { key: 'savingPerExtraHour', label: 'Saving per extra hour' },
+  { key: 'dealScore', label: 'Fare deal score' },
+  { key: 'percentOfMedian', label: '% of historical median' },
+  { key: 'savingVsMedian', label: 'Saving vs median' },
 ];
 
 export interface ResultFilters {
@@ -27,6 +30,10 @@ export interface ResultFilters {
   selfTransfer: 'any' | 'no' | 'yes';
   cabins: string[];
   dealLevels: DealLevel[];
+  minDealScore: number;
+  confidences: FareConfidence[];
+  cabinQualities: CabinQualityLabel[];
+  opportunitiesOnly: boolean;
   outboundFrom: string;
   outboundTo: string;
   nonDominatedOnly: boolean;
@@ -47,6 +54,10 @@ export const EMPTY_FILTERS: ResultFilters = {
   selfTransfer: 'any',
   cabins: [],
   dealLevels: [],
+  minDealScore: 0,
+  confidences: [],
+  cabinQualities: [],
+  opportunitiesOnly: false,
   outboundFrom: '',
   outboundTo: '',
   nonDominatedOnly: false,
@@ -71,6 +82,10 @@ export function applyFilters(journeys: ScoredJourney[], f: ResultFilters): Score
     if (f.selfTransfer === 'yes' && it.selfTransfers === 0) return false;
     if (f.cabins.length && !f.cabins.includes(it.cabinSummary.requestedCabin)) return false;
     if (f.dealLevels.length && !f.dealLevels.includes(j.deal.level)) return false;
+    if (f.minDealScore > 0 && (j.deal.dealScore ?? -1) < f.minDealScore) return false;
+    if (f.confidences.length && !f.confidences.includes(j.deal.confidence)) return false;
+    if (f.cabinQualities.length && !f.cabinQualities.includes(j.deal.cabinQuality.label)) return false;
+    if (f.opportunitiesOnly && j.deal.opportunities.length === 0) return false;
     const outDate = it.outbound.departureLocal.slice(0, 10);
     if (f.outboundFrom && outDate < f.outboundFrom) return false;
     if (f.outboundTo && outDate > f.outboundTo) return false;
@@ -96,6 +111,12 @@ export function sortJourneys(journeys: ScoredJourney[], key: SortKey, dir: 'asc'
         return new Date(j.itinerary.outbound.arrivalUtc).getTime();
       case 'savingPerExtraHour':
         return j.baseline.savingPerExtraHour ?? (j.baseline.dominant ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY);
+      case 'dealScore':
+        return j.deal.dealScore ?? -1;
+      case 'percentOfMedian':
+        return j.deal.percentOfMedian ?? Number.POSITIVE_INFINITY;
+      case 'savingVsMedian':
+        return j.deal.savingVsMedianEur ?? Number.NEGATIVE_INFINITY;
     }
   };
   const m = dir === 'asc' ? 1 : -1;
@@ -110,6 +131,9 @@ export const DEFAULT_SORT_DIR: Record<SortKey, 'asc' | 'desc'> = {
   departure: 'asc',
   arrival: 'asc',
   savingPerExtraHour: 'desc',
+  dealScore: 'desc',
+  percentOfMedian: 'asc',
+  savingVsMedian: 'desc',
 };
 
 export interface JourneyGroup {

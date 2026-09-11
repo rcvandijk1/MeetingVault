@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Play } from 'lucide-react';
-import { DEAL_LEVELS } from '@kfr/core';
+import { DEAL_LEVELS, DEAL_LEVEL_LABELS } from '@kfr/core';
 import { useProfiles, useRadar, useRunSearch } from '../api/hooks';
+import { OpportunityChip } from '../components/Badges';
 import { ResultsView } from '../components/ResultsView';
 import { Card, Empty, Loading, Stat } from '../components/ui';
 import { DEAL_COLORS, fmtInstant, formatEur } from '../lib/format';
@@ -47,13 +48,30 @@ export function RadarPage() {
       {data && (
         <div className="stack">
           <div className="deal-counts" data-testid="deal-counts">
-            {DEAL_LEVELS.slice().reverse().map((lvl) => (
+            {DEAL_LEVELS.map((lvl) => (
               <div key={lvl} className="deal-count" style={{ ['--lvl' as string]: DEAL_COLORS[lvl] }} data-testid={`deal-count-${lvl}`}>
                 <div className="n">{data.dealCounts[lvl] ?? 0}</div>
-                <div className="l">{lvl}</div>
+                <div className="l">{DEAL_LEVEL_LABELS[lvl]}</div>
               </div>
             ))}
           </div>
+          {data.opportunities.length > 0 && (
+            <Card title={`Fare opportunities · ${data.opportunities.length}`} testId="radar-opportunities" actions={<Link to="/deals" className="btn sm">Deal explorer</Link>}>
+              <div className="stack" style={{ gap: 6 }}>
+                {data.opportunities.slice(0, 8).map((o) => (
+                  <div key={o.id} className="row" style={{ alignItems: 'baseline' }}>
+                    <OpportunityChip o={o} />
+                    <span className="small">
+                      <span className="strong">
+                        {o.originAirport} → {o.arrivalGateway}
+                      </span>{' '}
+                      · {formatEur(o.fareEur)} · {o.reason}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </Card>
+          )}
 
           {data.run ? (
             <>

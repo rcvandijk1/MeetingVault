@@ -19,6 +19,9 @@ export const keys = {
   radar: (profileId?: string) => ['radar', profileId ?? 'default'] as const,
   history: (q: object) => ['history', q] as const,
   historySummary: ['history', 'summary'] as const,
+  fingerprint: (fp: string, fare?: number) => ['history', 'fingerprint', fp, fare ?? ''] as const,
+  deals: (q: object) => ['deals', q] as const,
+  opportunities: (q: object) => ['opportunities', q] as const,
   providers: ['providers'] as const,
   scheduler: ['scheduler'] as const,
 };
@@ -38,6 +41,9 @@ export const useItineraries = (ids: string[]) => useQuery({ queryKey: keys.itine
 export const useRadar = (profileId?: string) => useQuery({ queryKey: keys.radar(profileId), queryFn: () => api.radar(profileId) });
 export const useHistory = (q: { origin?: string; gateway?: string; cabin?: string; days?: number }) => useQuery({ queryKey: keys.history(q), queryFn: () => api.history(q) });
 export const useHistorySummary = () => useQuery({ queryKey: keys.historySummary, queryFn: api.historySummary });
+export const useFingerprintHistory = (fingerprint: string | undefined, currentFareEur?: number) => useQuery({ queryKey: keys.fingerprint(fingerprint ?? '', currentFareEur), queryFn: () => api.fingerprintHistory(fingerprint!, currentFareEur), enabled: Boolean(fingerprint) });
+export const useDeals = (q: { runId?: string; profileId?: string; cabin?: string }) => useQuery({ queryKey: keys.deals(q), queryFn: () => api.deals(q) });
+export const useOpportunities = (q: { runId?: string; days?: number; type?: string; cabin?: string }) => useQuery({ queryKey: keys.opportunities(q), queryFn: () => api.opportunities(q) });
 export const useProviderStatus = () => useQuery({ queryKey: keys.providers, queryFn: api.providerStatus, refetchInterval: 30000 });
 export const useScheduler = () => useQuery({ queryKey: keys.scheduler, queryFn: api.scheduler, refetchInterval: 30000 });
 
@@ -63,6 +69,7 @@ export function useVerifications(q: { runId?: string; ids?: string[] }) {
       void qc.invalidateQueries({ queryKey: ['runs'] });
       void qc.invalidateQueries({ queryKey: ['radar'] });
       void qc.invalidateQueries({ queryKey: ['itineraries'] });
+      void qc.invalidateQueries({ queryKey: ['deals'] });
     }
   }, [finished, qc]);
   return query;
@@ -84,6 +91,8 @@ export function useRunSearch() {
       void qc.invalidateQueries({ queryKey: keys.runs });
       void qc.invalidateQueries({ queryKey: ['radar'] });
       void qc.invalidateQueries({ queryKey: ['history'] });
+      void qc.invalidateQueries({ queryKey: ['deals'] });
+      void qc.invalidateQueries({ queryKey: ['opportunities'] });
       void qc.invalidateQueries({ queryKey: keys.providers });
     },
   });

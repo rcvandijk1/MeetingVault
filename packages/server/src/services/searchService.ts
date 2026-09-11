@@ -31,8 +31,10 @@ export interface SearchServiceDeps {
   onSearchCompleted?: (outcome: SearchOutcome) => Promise<void>;
 }
 
-/** Days of observation history used as the deal-intelligence reference. */
-export const HISTORY_WINDOW_DAYS = 120;
+/** Days of observation history loaded for fare intelligence (cohort windows and price trends select within it). */
+export const HISTORY_WINDOW_DAYS = 730;
+/** Upper bound on observations loaded per search (newest first). */
+export const HISTORY_MAX_ROWS = 100000;
 
 export class SearchService {
   private readonly now: () => Date;
@@ -57,9 +59,10 @@ export class SearchService {
       repos.listOrigins(),
       repos.listGateways(),
       repos.listGroundTransfers(),
-      repos.queryObservations({ sinceDays: HISTORY_WINDOW_DAYS }).then((obs) => obs.filter((o) => profile.cabins.includes(o.cabin))),
+      // All cabins: the premium-cabin anomaly check compares business fares with the economy cohort of the same route.
+      repos.queryObservations({ sinceDays: HISTORY_WINDOW_DAYS, limit: HISTORY_MAX_ROWS }),
     ]);
-    return buildPipelineContext({ profile, home: settings.home, airports, originProfiles, gateways, groundTransfers, history, dealThresholds: settings.dealThresholds, now: this.now().toISOString() });
+    return buildPipelineContext({ profile, home: settings.home, airports, originProfiles, gateways, groundTransfers, history, fareIntelligence: settings.fareIntelligence, now: this.now().toISOString() });
   }
 
   /** Runs the complete flow: providers → pipeline → persistence. */
@@ -142,7 +145,9 @@ export class SearchService {
     const run = await this.deps.repos.getRun(runId);
     if (!run) throw new Error(`Search run ${runId} not found`);
     const journeys = await this.deps.repos.getRunJourneys(runId);
-    const rescored = rescoreJourneys(journeys, weights, run.profileSnapshot.baselineOrigin);
+    const settings = await this.deps.repos.getSettings();
+    const vot = settings.fareIntelligence.timeValue.enabled ? settings.fareIntelligence.timeValue.eurPerActiveHour : null;
+    const rescored = rescoreJourneys(journeys, weights, run.profileSnapshot.baselineOrigin, vot);
     if (persist) {
       await this.deps.repos.updateRunScores(runId, rescored, this.now());
       await this.deps.repos.saveScoreWeights(runId, weights);
@@ -163,7 +168,7 @@ export class SearchService {
     const normalized = journeys.map((j) => (j.itinerary.id === itineraryId ? patch(j.itinerary) : j.itinerary));
     const ctx = await this.buildContext(run.profileSnapshot);
     const result = runPipeline(normalized, ctx);
-    await this.deps.repos.updateRunScores(runId, result.journeys, this.now());
+    await this.deps.repos.updateRunScores(runId, result.journeys, this.now(), result.opportunities);
     return this.deps.repos.getJourney(itineraryId);
   }
 
@@ -183,21 +188,7 @@ export class SearchService {
 
     const runId = await this.deps.repos.getItineraryRunId(itineraryId);
     if (!runId) return { journey: stored, refreshed: false, error: 'Search run for itinerary not found' };
-    await this.deps.repos.addObservation({
-      observedAt: nowIso,
-      originAirport: fresh.originAirport,
-      arrivalGateway: fresh.arrivalGateway,
-      outboundDate: fresh.outbound.departureLocal.slice(0, 10),
-      inboundDate: fresh.inbound.departureLocal.slice(0, 10),
-      airline: fresh.primaryAirline,
-      cabin: fresh.cabinSummary.requestedCabin,
-      fare: fresh.fare,
-      currency: fresh.currency,
-      fareEur: fresh.fareEur,
-      provider: fresh.provider,
-      itineraryFingerprint: fresh.fingerprint,
-      searchRunId: runId,
-    });
+    await this.deps.repos.addObservation(this.deps.repos.observationFor(fresh, nowIso, runId));
     const journey =
       (await this.rerunForItinerary(itineraryId, (it) => ({ ...fresh, id: itineraryId, firstSeen: it.firstSeen, lastSeen: nowIso, lastValidated: nowIso, alternatives: it.alternatives, verifiedFare: it.verifiedFare ?? null }))) ?? stored;
     return { journey, refreshed: true, error: null };

@@ -5,6 +5,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { Layout } from './components/Layout';
 import { RadarPage } from './pages/RadarPage';
 import { SearchPage } from './pages/SearchPage';
+import { DealsPage } from './pages/DealsPage';
 import { ComparePage } from './pages/ComparePage';
 import { HistoryPage } from './pages/HistoryPage';
 import { ProfilesPage } from './pages/ProfilesPage';
@@ -21,6 +22,7 @@ const router = createBrowserRouter([
       { index: true, element: <RadarPage /> },
       { path: 'search', element: <SearchPage /> },
       { path: 'search/:runId', element: <SearchPage /> },
+      { path: 'deals', element: <DealsPage /> },
       { path: 'compare', element: <ComparePage /> },
       { path: 'history', element: <HistoryPage /> },
       { path: 'profiles', element: <ProfilesPage /> },

@@ -20,7 +20,7 @@ True journey cost                €1,905
 
 | Layer | Technology |
 | --- | --- |
-| `packages/core` | TypeScript domain engine (no framework): normalisation, hard constraints, enrichment, scoring, Pareto, deal intelligence, providers, orchestrator. Runs in Node **and** the browser. |
+| `packages/core` | TypeScript domain engine (no framework): normalisation, hard constraints, enrichment, scoring, Pareto, historical fare intelligence (`src/intelligence`), providers, orchestrator. Runs in Node **and** the browser. |
 | `packages/server` | Node 20+, Fastify 5, Drizzle ORM, PostgreSQL 14+, Zod, Playwright (headless Chromium for booking-flow price checks) |
 | `packages/web` | React 18, Vite, TanStack Query, React Router, Zustand (compare selection only), Recharts, Lucide |
 | Tests | Vitest (unit + integration), Playwright (e2e) |
@@ -108,7 +108,8 @@ TRIP PROFILE ─▶ ORIGIN CANDIDATES ─▶ Stage A discovery (cheap-date estim
             ─▶ DEDUPLICATION (fingerprint = flights + times + route + cabin; other providers kept as alternatives)
             ─▶ HARD CONSTRAINTS (per direction; violations eliminate, never merely lower a score)
             ─▶ HOME ACCESS ─▶ HOTEL RULE ─▶ DESTINATION GROUND ─▶ TRUE COST ─▶ DOOR-TO-DOOR
-            ─▶ SOFT SCORING (9 categories, 0–100 each) ─▶ PARETO ─▶ DEAL INTELLIGENCE ─▶ RANKED JOURNEYS
+            ─▶ SOFT SCORING (9 categories, 0–100 each) ─▶ PARETO ─▶ FARE INTELLIGENCE (historical cohorts,
+               classification, deal score, market position, price trend) ─▶ RANKED JOURNEYS ─▶ OPPORTUNITY EVENTS
 ```
 
 Every stage is a pure function in `packages/core/src/pipeline` with its own tests.
@@ -121,7 +122,7 @@ Every stage is a pure function in `packages/core/src/pipeline` with its own test
 | Door-to-door journey time | 20 | 100 at the lowest active travel burden; `journeyTimePointsPerExtraHour` per extra hour. Hotel rest counts at `hotelRestBurdenFactor` (default 0.3). |
 | Flight timing | 15 | Four editable time-of-day band curves (outbound dep/arr, return dep/arr), normalised so the best band = 100; plus an optional long-haul sleep-opportunity bonus |
 | Transfer quality | 10 | Points per transfer; too-short and too-long connections both lose points (ideal window configurable); overnight and airport changes penalised |
-| Fare anomaly | 10 | % below the reference fare (history of the same route/cabin when ≥ 5 observations, else this search's distribution) |
+| Fare deal (anomaly) | 10 | The fare-intelligence **Deal Score** (0–100): percentile rank, distance below the historical cohort median and the cohort low, dampened by confidence, minus a cabin-quality penalty. 50 when no reference exists. See `docs/fare-intelligence.md`. |
 | Cabin quality | 5 | % of air time in the requested cabin; misleading mixed cabins flagged |
 | Origin inconvenience | 5 | Per-airport inconvenience penalty plus a penalty when a hotel is needed |
 | Self-transfer risk | 3 | Penalty per self-transfer, extra for tight buffers and baggage re-check; protected connections score 100 |
@@ -139,8 +140,13 @@ Click any score for the full breakdown (`score × weight` per row) and the human
   low-friction itinerary overall. A journey that is both cheaper and faster is marked **dominant**.
 * **Pareto**: a journey is dominated when another is at least as cheap, as fast and as convenient (convenience =
   mean of transfer, origin, self-transfer and destination scores). Filter *Only non-dominated options* hides them.
-* **Deal levels** NORMAL → INSANE come from the % below reference (thresholds editable in Settings). Airline "was/now"
-  prices are never used. Every fare seen is appended to `fare_observations`; nothing is overwritten.
+* **Fare classification** (Exceptional … Very expensive) compares the fare with the median of comparable observed
+  fares (same cabin quality; same route, trip length, season and booking horizon where enough samples exist, widening
+  in documented steps). Reference prices are medians of the application's own observations; airline "was/now" or
+  list prices are never used. Every fare seen is appended to `fare_observations`; nothing is overwritten. Full
+  methodology, scoring model, self-audit and limitations: **`docs/fare-intelligence.md`**.
+* **Alternative-airport break-even**: for every non-baseline journey the airfare at which its true cost equals the
+  baseline's is exposed (`baseline.breakEvenFareEur`), next to the airfare-only and true-cost differences.
 
 ### Hotel logic
 
@@ -151,10 +157,13 @@ separate `returnHotelLatestArrivalTime` per airport handles late arrivals back i
 
 ## Data model (PostgreSQL)
 
-`airports`, `app_settings` (home, FX rates, deal/alert thresholds), `origin_access_profiles`, `destination_gateways`,
-`ground_transfer_profiles`, `trip_profiles` (constraints, time preferences, weights and parameters as JSONB — one
-profile is a self-contained search configuration), `search_runs` (request, profile snapshot, stats, provider
-errors, rejected itineraries), `itineraries`, `flight_segments`, `score_results`, `fare_observations` (append-only),
+`airports`, `app_settings` (home, FX rates, fare-intelligence config, alert thresholds), `origin_access_profiles`,
+`destination_gateways`, `ground_transfer_profiles`, `trip_profiles` (constraints, time preferences, weights and
+parameters as JSONB — one profile is a self-contained search configuration), `search_runs` (request, profile
+snapshot, stats, provider errors, rejected itineraries), `itineraries`, `flight_segments`, `score_results`,
+`fare_observations` (append-only; route, dates, trip length, days to departure, stops, connection airports, leg
+times, duration, cabin quality, provider offer, verified flag), `fare_opportunities` (NEW_LOW, SIGNIFICANT_DROP,
+HISTORICAL_OUTLIER, ALTERNATIVE_AIRPORT_OPPORTUNITY, PREMIUM_CABIN_ANOMALY, ROUTING_OPPORTUNITY events per run),
 `known_itineraries` (first seen / last seen / last validated per fingerprint), `provider_offer_references`,
 `provider_events`. Migrations live in `packages/server/drizzle`.
 
@@ -169,7 +178,8 @@ instants, never from local clock differences.
 `GET /api/search/:id`, `GET /api/search/:id/matrix?metric=` · `GET /api/itineraries?runId=|ids=`,
 `GET /api/itineraries/:id`, `POST /api/itineraries/:id/refresh` · `POST /api/scoring/rescore`,
 `POST /api/scoring/explain`, `GET /api/scoring/defaults` · `GET /api/time-preferences/defaults` ·
-`GET /api/history`, `GET /api/history/summary` · `GET /api/radar` · `GET /api/providers/status` ·
+`GET /api/history`, `GET /api/history/summary`, `GET /api/history/fingerprint/:fingerprint` · `GET /api/deals`,
+`GET /api/opportunities`, `GET /api/settings/fare-intelligence/defaults` · `GET /api/radar` · `GET /api/providers/status` ·
 `GET /api/scheduler`, `POST /api/scheduler/run` · `GET /api/health`.
 
 ## Flight class for every flight
@@ -301,7 +311,7 @@ form (not in function) or depends on external services:
 | 20–22 Provider abstraction, normalized model, segments | implemented | mock + Duffel + Amadeus adapters; docs read via official SDK typings |
 | 23–25 Two-stage search, price history, deal intelligence | implemented | |
 | 26–31 Scoring engine, weights, timing, transfers, saving/hour, Pareto | implemented | |
-| 32–42 UI | implemented | Radar, Search (+ save as profile), Compare (2–5), History, Profiles, Settings, score explanation, origin matrix |
+| 32–42 UI | implemented | Radar (+ opportunity feed), Search (+ save as profile), Deals (Deal Explorer / Business Class deal detector), Compare (2–5), History, Profiles, Settings, score explanation, deal explanation with fare-history chart, origin matrix |
 | 43–45 Storage, stack, API | implemented | constraint/time/weight profiles are JSONB inside `trip_profiles` (self-contained profiles); the search request is stored on the run |
 | 46–47 Scheduler, alerts | implemented | notification delivery = log provider; Telegram/e-mail/push not implemented (interface ready) |
 | 48–53 Security, provider failure, dedupe, currency, time zones, performance | implemented | |

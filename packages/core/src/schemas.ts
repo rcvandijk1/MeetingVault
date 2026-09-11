@@ -156,11 +156,43 @@ export const homeSettingsSchema = z.object({
   fxRatesToEur: z.record(z.string(), z.number().positive()),
 });
 
-export const dealThresholdsSchema = z.object({
-  good: z.number().min(0).max(100),
-  excellent: z.number().min(0).max(100),
-  exceptional: z.number().min(0).max(100),
-  insane: z.number().min(0).max(100),
+export const fareClassificationThresholdsSchema = z
+  .object({
+    exceptional: z.number().min(1).max(200),
+    excellent: z.number().min(1).max(200),
+    good: z.number().min(1).max(200),
+    normal: z.number().min(1).max(300),
+    expensive: z.number().min(1).max(400),
+    exceptionalBelowLowestPercent: z.number().min(0).max(100),
+  })
+  .refine((t) => t.exceptional < t.excellent && t.excellent < t.good && t.good < t.normal && t.normal < t.expensive, { message: 'Thresholds must be strictly ascending: exceptional < excellent < good < normal < expensive' });
+
+export const fareIntelligenceConfigSchema = z.object({
+  thresholds: fareClassificationThresholdsSchema,
+  minCohortSamples: z.number().int().min(2).max(500),
+  confidence: z.object({
+    highMinSamples: z.number().int().min(2).max(10000),
+    mediumMinSamples: z.number().int().min(2).max(10000),
+    highMinDistinctDays: z.number().int().min(1).max(365),
+    mediumMinDistinctDays: z.number().int().min(1).max(365),
+  }),
+  windowsDays: z.array(z.number().int().min(0).max(3650)).min(1),
+  preferredWindowDays: z.number().int().min(0).max(3650),
+  recentDays: z.number().int().min(1).max(365),
+  rollingDays: z.number().int().min(1).max(3650),
+  seasonalityEnabled: z.boolean(),
+  advancePurchaseBandEdges: z.array(z.number().int().min(1).max(1000)).min(1),
+  tripDurationToleranceDays: z.number().int().min(0).max(60),
+  outlier: z.object({ lowFactor: z.number().min(0).max(1), highFactor: z.number().min(1).max(100), iqrMultiplier: z.number().min(0).max(20) }),
+  drop: z.object({ significantDropPercent: z.number().min(0).max(100), newLowMinObservations: z.number().int().min(1).max(100) }),
+  opportunities: z.object({
+    altAirportMinSavingEur: z.number().min(0).max(100000),
+    altAirportMinSavingPerHour: z.number().min(0).max(100000),
+    routingMinSavingEur: z.number().min(0).max(100000),
+    premiumVsEconomyMaxRatio: z.number().min(0).max(20),
+  }),
+  timeValue: z.object({ enabled: z.boolean(), eurPerActiveHour: z.number().min(0).max(10000), eurPerHotelNight: z.number().min(0).max(10000), eurPerTransfer: z.number().min(0).max(10000) }),
+  cabinQualityPenalty: z.object({ mostly: z.number().min(0).max(100), mixed: z.number().min(0).max(100) }),
 });
 
 export const alertThresholdsSchema = z.object({

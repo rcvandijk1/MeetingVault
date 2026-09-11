@@ -1,11 +1,12 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { Radar, Search, GitCompare, History, UserCog, Settings, Plane } from 'lucide-react';
+import { Radar, Search, GitCompare, History, UserCog, Settings, Plane, Tag } from 'lucide-react';
 import { useCompareStore } from '../store/compare';
 import { useProviderStatus } from '../api/hooks';
 
 const NAV = [
   { to: '/', label: 'Radar', icon: Radar, end: true },
   { to: '/search', label: 'Search', icon: Search },
+  { to: '/deals', label: 'Deals', icon: Tag },
   { to: '/compare', label: 'Compare', icon: GitCompare },
   { to: '/history', label: 'History', icon: History },
   { to: '/profiles', label: 'Profiles', icon: UserCog },

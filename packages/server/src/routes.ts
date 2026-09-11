@@ -8,6 +8,14 @@ import {
   ACCESS_MODES,
   GROUND_MODES,
   DEAL_LEVELS,
+  DEAL_LEVEL_LABELS,
+  FARE_CONFIDENCES,
+  CABIN_QUALITY_LABELS,
+  FARE_OPPORTUNITY_TYPES,
+  KRABI_REGION_OBJECTIVE,
+  DEFAULT_FARE_INTELLIGENCE,
+  fareTrend,
+  robustStats,
   SCORE_CATEGORIES,
   SCORE_CATEGORY_LABELS,
   DEFAULT_WEIGHTS,
@@ -19,13 +27,14 @@ import {
   buildDefaultProfile,
   buildOriginMatrix,
   explainScore,
+  emptyDealCounts,
   alertChannelFor,
   airportSchema,
   originAccessProfileSchema,
   destinationGatewaySchema,
   groundTransferSchema,
   homeSettingsSchema,
-  dealThresholdsSchema,
+  fareIntelligenceConfigSchema,
   alertThresholdsSchema,
   tripProfileInputSchema,
   tripProfileBaseSchema,
@@ -50,6 +59,11 @@ export function registerRoutes(app: FastifyInstance, deps: AppDeps): void {
     accessModes: ACCESS_MODES,
     groundModes: GROUND_MODES,
     dealLevels: DEAL_LEVELS,
+    dealLevelLabels: DEAL_LEVEL_LABELS,
+    confidences: FARE_CONFIDENCES,
+    cabinQualities: CABIN_QUALITY_LABELS,
+    opportunityTypes: FARE_OPPORTUNITY_TYPES,
+    objective: KRABI_REGION_OBJECTIVE,
     scoreCategories: SCORE_CATEGORIES.map((c) => ({ key: c, label: SCORE_CATEGORY_LABELS[c] })),
   }));
 
@@ -62,9 +76,10 @@ export function registerRoutes(app: FastifyInstance, deps: AppDeps): void {
   // ------------------------------------------------------------- settings
   app.get('/api/settings', async () => repos.getSettings());
   app.put('/api/settings', async (req) => {
-    const body = z.object({ home: homeSettingsSchema.optional(), dealThresholds: dealThresholdsSchema.optional(), alertThresholds: alertThresholdsSchema.optional() }).parse(req.body);
+    const body = z.object({ home: homeSettingsSchema.optional(), fareIntelligence: fareIntelligenceConfigSchema.optional(), alertThresholds: alertThresholdsSchema.optional() }).parse(req.body);
     return repos.updateSettings(body);
   });
+  app.get('/api/settings/fare-intelligence/defaults', async () => DEFAULT_FARE_INTELLIGENCE);
 
   // -------------------------------------------------------------- origins
   app.get('/api/origins', async () => repos.listOrigins());
@@ -221,16 +236,47 @@ export function registerRoutes(app: FastifyInstance, deps: AppDeps): void {
     const profile = q.profileId ? await repos.getProfile(q.profileId) : await repos.getDefaultProfile();
     const run = await repos.latestCompletedRun(profile?.id);
     const settings = await repos.getSettings();
-    if (!run) return { profile, run: null, dealCounts: { NORMAL: 0, GOOD: 0, EXCELLENT: 0, EXCEPTIONAL: 0, INSANE: 0 }, alertCounts: {}, top: [], journeys: [] };
+    if (!run) return { profile, run: null, dealCounts: emptyDealCounts(), alertCounts: {}, top: [], journeys: [], opportunities: [] };
     const journeys = await repos.getRunJourneys(run.id);
-    const dealCounts = { NORMAL: 0, GOOD: 0, EXCELLENT: 0, EXCEPTIONAL: 0, INSANE: 0 } as Record<string, number>;
+    const dealCounts = emptyDealCounts() as Record<string, number>;
     const alertCounts: Record<string, number> = {};
     for (const j of journeys) {
       dealCounts[j.deal.level] = (dealCounts[j.deal.level] ?? 0) + 1;
       const ch = alertChannelFor(j.overallScore, settings.alertThresholds);
       alertCounts[ch] = (alertCounts[ch] ?? 0) + 1;
     }
-    return { profile, run, dealCounts, alertCounts, top: journeys.slice(0, q.limit), journeys };
+    const opportunities = await repos.listOpportunities({ runId: run.id, limit: 50 });
+    return { profile, run, dealCounts, alertCounts, top: journeys.slice(0, q.limit), journeys, opportunities };
+  });
+
+  // ---------------------------------------------------------------- deals
+  /**
+   * Deal explorer: the journeys of a run (latest completed by default) with
+   * classification / confidence summaries. Filtering and sorting are cheap on
+   * the client, so the endpoint returns the full set plus the run's opportunities.
+   */
+  app.get('/api/deals', async (req, reply) => {
+    const q = z.object({ runId: z.string().optional(), profileId: z.string().optional(), cabin: z.string().optional() }).parse(req.query);
+    const run = q.runId ? await repos.getRun(q.runId) : await repos.latestCompletedRun(q.profileId);
+    if (q.runId && !run) return reply.code(404).send({ error: 'Search run not found' });
+    if (!run) return { run: null, journeys: [], summary: { byClassification: emptyDealCounts(), byConfidence: {}, byCabinQuality: {}, total: 0 }, opportunities: [], observationCount: await repos.countObservations() };
+    const all = await repos.getRunJourneys(run.id);
+    const journeys = q.cabin ? all.filter((j) => j.itinerary.cabinSummary.requestedCabin === q.cabin) : all;
+    const byClassification = emptyDealCounts() as Record<string, number>;
+    const byConfidence: Record<string, number> = {};
+    const byCabinQuality: Record<string, number> = {};
+    for (const j of journeys) {
+      byClassification[j.deal.level] = (byClassification[j.deal.level] ?? 0) + 1;
+      byConfidence[j.deal.confidence] = (byConfidence[j.deal.confidence] ?? 0) + 1;
+      byCabinQuality[j.deal.cabinQuality.label] = (byCabinQuality[j.deal.cabinQuality.label] ?? 0) + 1;
+    }
+    const opportunities = await repos.listOpportunities({ runId: run.id, cabin: q.cabin, limit: 500 });
+    return { run, journeys, summary: { byClassification, byConfidence, byCabinQuality, total: journeys.length }, opportunities, observationCount: await repos.countObservations() };
+  });
+
+  app.get('/api/opportunities', async (req) => {
+    const q = z.object({ runId: z.string().optional(), days: z.coerce.number().int().min(1).max(3650).optional(), type: z.enum(FARE_OPPORTUNITY_TYPES as [string, ...string[]]).optional(), cabin: z.string().optional(), limit: z.coerce.number().int().min(1).max(1000).default(200) }).parse(req.query);
+    return repos.listOpportunities({ runId: q.runId, sinceDays: q.runId ? undefined : (q.days ?? 30), type: q.type, cabin: q.cabin, limit: q.limit });
   });
 
   // -------------------------------------------------------------- history
@@ -240,6 +286,17 @@ export function registerRoutes(app: FastifyInstance, deps: AppDeps): void {
     return { observations, count: observations.length };
   });
   app.get('/api/history/summary', async () => repos.observationSummary());
+  /** Every observation of one physical itinerary plus its price trend (first/last/lowest/highest, change, 7/30-day medians). */
+  app.get('/api/history/fingerprint/:fingerprint', async (req) => {
+    const { fingerprint } = z.object({ fingerprint: z.string().min(1).max(32) }).parse(req.params);
+    const q = z.object({ currentFareEur: z.coerce.number().optional() }).parse(req.query);
+    const observations = (await repos.queryObservations({ fingerprint, limit: 5000 })).sort((a, b) => a.observedAt.localeCompare(b.observedAt));
+    const settings = await repos.getSettings();
+    const latest = observations[observations.length - 1];
+    const current = q.currentFareEur ?? latest?.fareEur ?? 0;
+    const now = new Date(new Date().getTime() + 1000).toISOString();
+    return { fingerprint, observations, count: observations.length, stats: robustStats(observations.map((o) => o.fareEur)), trend: latest ? fareTrend(fingerprint, current, observations, now, settings.fareIntelligence) : null };
+  });
 
   // ------------------------------------------------------------ providers
   app.get('/api/providers/status', async () => {

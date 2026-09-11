@@ -1,6 +1,7 @@
 import type {
   AlertThresholds,
-  DealThresholds,
+  FareIntelligenceConfig,
+  TravelObjective,
   DestinationGateway,
   GroundTransferProfile,
   HomeSettings,
@@ -120,11 +121,43 @@ export const DEFAULT_TIME_PREFERENCES: TimePreferenceProfile = {
   ],
 };
 
-export const DEFAULT_DEAL_THRESHOLDS: DealThresholds = {
-  good: 8,
-  excellent: 16,
-  exceptional: 25,
-  insane: 40,
+export const DEFAULT_FARE_INTELLIGENCE: FareIntelligenceConfig = {
+  // Percent of the normalized cohort median (upper bound of each band).
+  thresholds: { exceptional: 60, excellent: 72, good: 85, normal: 115, expensive: 135, exceptionalBelowLowestPercent: 15 },
+  minCohortSamples: 5,
+  confidence: { highMinSamples: 20, mediumMinSamples: 8, highMinDistinctDays: 5, mediumMinDistinctDays: 2 },
+  windowsDays: [30, 90, 180, 365, 0],
+  preferredWindowDays: 90,
+  recentDays: 7,
+  rollingDays: 30,
+  seasonalityEnabled: true,
+  advancePurchaseBandEdges: [14, 30, 60, 90, 180, 365],
+  tripDurationToleranceDays: 3,
+  outlier: { lowFactor: 0.2, highFactor: 5, iqrMultiplier: 3 },
+  drop: { significantDropPercent: 10, newLowMinObservations: 3 },
+  opportunities: { altAirportMinSavingEur: 100, altAirportMinSavingPerHour: 40, routingMinSavingEur: 150, premiumVsEconomyMaxRatio: 2 },
+  timeValue: { enabled: false, eurPerActiveHour: 20, eurPerHotelNight: 0, eurPerTransfer: 0 },
+  cabinQualityPenalty: { mostly: 5, mixed: 15 },
+};
+
+/** The travel objective: reach the Krabi region. Gateways are interchangeable at cohort level 4. */
+export const KRABI_REGION_OBJECTIVE: TravelObjective = {
+  id: 'KRABI_REGION',
+  name: 'Krabi region',
+  gateways: [
+    { code: 'KBV', onward: 'NONE', note: 'Krabi International — direct.' },
+    { code: 'HKT', onward: 'GROUND', note: 'Phuket — private driver to Krabi.' },
+    { code: 'BKK', onward: 'FLIGHT', note: 'Bangkok with an onward domestic flight (not searched by default).' },
+  ],
+  originRegions: {
+    BENELUX_DE: ['NL', 'BE', 'LU', 'DE'],
+    FRANCE: ['FR'],
+    UK_IE: ['GB', 'IE'],
+    NORDICS: ['DK', 'SE', 'NO', 'FI'],
+    ALPINE: ['CH', 'AT'],
+    SOUTH: ['ES', 'PT', 'IT'],
+    CENTRAL_EAST: ['PL', 'CZ', 'HU'],
+  },
 };
 
 export const DEFAULT_ALERT_THRESHOLDS: AlertThresholds = {

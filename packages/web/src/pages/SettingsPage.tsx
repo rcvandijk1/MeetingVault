@@ -265,29 +265,86 @@ function ThresholdsCard() {
     if (settings.data && !draft) setDraft(settings.data);
   }, [settings.data, draft]);
   if (!draft) return <Loading />;
+  const fi = draft.fareIntelligence;
+  const setFi = (patch: Partial<Settings['fareIntelligence']>): void => setDraft({ ...draft, fareIntelligence: { ...fi, ...patch } });
+  const resetDefaults = async (): Promise<void> => {
+    const d = await api.fareIntelligenceDefaults();
+    setDraft({ ...draft, fareIntelligence: d });
+  };
   return (
-    <Card title="Deal levels & alert thresholds" testId="thresholds-card" actions={<button className="btn primary sm" onClick={() => void wrap(() => api.updateSettings({ dealThresholds: draft.dealThresholds, alertThresholds: draft.alertThresholds }).then(() => invalidate(['settings'])))}><Save size={12} /> Save</button>}>
-      {msg && <p className={msg.kind === 'ok' ? 'success' : 'error'}>{msg.text}</p>}
-      <div className="grid grid-2">
-        <div>
-          <h3 style={{ marginBottom: 6 }}>Deal level = % below comparable reference fare</h3>
-          <div className="form-grid">
-            {(['good', 'excellent', 'exceptional', 'insane'] as const).map((k) => (
-              <NumberField key={k} label={`${k} ≥ %`} value={draft.dealThresholds[k]} onChange={(v) => setDraft({ ...draft, dealThresholds: { ...draft.dealThresholds, [k]: v } })} />
-            ))}
+    <div className="stack">
+      <Card
+        title="Fare intelligence"
+        testId="thresholds-card"
+        actions={
+          <div className="row">
+            <button className="btn sm" onClick={() => void resetDefaults()} data-testid="fi-reset">
+              Reset to defaults
+            </button>
+            <button className="btn primary sm" data-testid="fi-save" onClick={() => void wrap(() => api.updateSettings({ fareIntelligence: fi, alertThresholds: draft.alertThresholds }).then(() => invalidate(['settings'], ['deals'], ['radar'])))}>
+              <Save size={12} /> Save
+            </button>
           </div>
+        }
+      >
+        {msg && <p className={msg.kind === 'ok' ? 'success' : 'error'} data-testid="fi-status">{msg.text}</p>}
+        <h3 style={{ marginBottom: 6 }}>Classification = fare as % of the normalized historical median (upper bound of each band)</h3>
+        <div className="form-grid">
+          {(['exceptional', 'excellent', 'good', 'normal', 'expensive'] as const).map((k) => (
+            <NumberField key={k} label={`${k} ≤ %`} value={fi.thresholds[k]} onChange={(v) => setFi({ thresholds: { ...fi.thresholds, [k]: v } })} testId={`fi-threshold-${k}`} hint={k === 'expensive' ? 'above = very expensive' : undefined} />
+          ))}
+          <NumberField label="Exceptional when ≥ % below the lowest ever seen" value={fi.thresholds.exceptionalBelowLowestPercent} onChange={(v) => setFi({ thresholds: { ...fi.thresholds, exceptionalBelowLowestPercent: v } })} hint="below-the-floor rule" />
         </div>
-        <div>
-          <h3 style={{ marginBottom: 6 }}>Alert channel by overall score</h3>
-          <div className="form-grid">
-            {(['digest', 'notification', 'immediate', 'urgent'] as const).map((k) => (
-              <NumberField key={k} label={`${k} ≥ score`} value={draft.alertThresholds[k]} onChange={(v) => setDraft({ ...draft, alertThresholds: { ...draft.alertThresholds, [k]: v } })} />
-            ))}
-          </div>
-          <p className="tiny muted" style={{ marginTop: 6 }}>Below the digest threshold results only appear on the dashboard.</p>
+        <h3 style={{ margin: '14px 0 6px' }}>Cohorts and confidence</h3>
+        <div className="form-grid">
+          <NumberField label="Minimum comparable fares per cohort" value={fi.minCohortSamples} onChange={(v) => setFi({ minCohortSamples: v })} />
+          <NumberField label="High confidence: min fares" value={fi.confidence.highMinSamples} onChange={(v) => setFi({ confidence: { ...fi.confidence, highMinSamples: v } })} />
+          <NumberField label="High confidence: min distinct days" value={fi.confidence.highMinDistinctDays} onChange={(v) => setFi({ confidence: { ...fi.confidence, highMinDistinctDays: v } })} />
+          <NumberField label="Medium confidence: min fares" value={fi.confidence.mediumMinSamples} onChange={(v) => setFi({ confidence: { ...fi.confidence, mediumMinSamples: v } })} />
+          <NumberField label="Medium confidence: min distinct days" value={fi.confidence.mediumMinDistinctDays} onChange={(v) => setFi({ confidence: { ...fi.confidence, mediumMinDistinctDays: v } })} />
+          <NumberField label="Preferred window (days, 0 = all)" value={fi.preferredWindowDays} onChange={(v) => setFi({ preferredWindowDays: v })} hint={`candidates: ${fi.windowsDays.map((d) => (d === 0 ? 'all' : d)).join(', ')}`} />
+          <NumberField label="Trip-length tolerance (± days)" value={fi.tripDurationToleranceDays} onChange={(v) => setFi({ tripDurationToleranceDays: v })} />
+          <TextField label="Advance-purchase band edges (days)" value={fi.advancePurchaseBandEdges.join(', ')} onChange={(v) => setFi({ advancePurchaseBandEdges: v.split(',').map((x) => Number(x.trim())).filter((x) => Number.isFinite(x) && x > 0) })} />
+          <NumberField label="Recent median window (days)" value={fi.recentDays} onChange={(v) => setFi({ recentDays: v })} />
+          <NumberField label="Rolling median window (days)" value={fi.rollingDays} onChange={(v) => setFi({ rollingDays: v })} />
         </div>
-      </div>
-    </Card>
+        <div className="row" style={{ marginTop: 8 }}>
+          <Check label="Seasonal comparison (level-1 cohort requires the same season)" checked={fi.seasonalityEnabled} onChange={(v) => setFi({ seasonalityEnabled: v })} />
+        </div>
+        <h3 style={{ margin: '14px 0 6px' }}>Data quality, drops and opportunities</h3>
+        <div className="form-grid">
+          <NumberField label="Outlier: below × median" value={fi.outlier.lowFactor} step={0.05} onChange={(v) => setFi({ outlier: { ...fi.outlier, lowFactor: v } })} />
+          <NumberField label="Outlier: above × median" value={fi.outlier.highFactor} step={0.5} onChange={(v) => setFi({ outlier: { ...fi.outlier, highFactor: v } })} />
+          <NumberField label="Outlier: IQR fence multiplier" value={fi.outlier.iqrMultiplier} step={0.5} onChange={(v) => setFi({ outlier: { ...fi.outlier, iqrMultiplier: v } })} />
+          <NumberField label="Significant drop ≥ %" value={fi.drop.significantDropPercent} onChange={(v) => setFi({ drop: { ...fi.drop, significantDropPercent: v } })} />
+          <NumberField label="New low needs prior observations" value={fi.drop.newLowMinObservations} onChange={(v) => setFi({ drop: { ...fi.drop, newLowMinObservations: v } })} />
+          <NumberField label="Alt. airport: min saving €" value={fi.opportunities.altAirportMinSavingEur} onChange={(v) => setFi({ opportunities: { ...fi.opportunities, altAirportMinSavingEur: v } })} />
+          <NumberField label="Alt. airport: min saving €/extra hour" value={fi.opportunities.altAirportMinSavingPerHour} onChange={(v) => setFi({ opportunities: { ...fi.opportunities, altAirportMinSavingPerHour: v } })} />
+          <NumberField label="Routing: min saving €" value={fi.opportunities.routingMinSavingEur} onChange={(v) => setFi({ opportunities: { ...fi.opportunities, routingMinSavingEur: v } })} />
+          <NumberField label="Premium anomaly: ≤ × economy median" value={fi.opportunities.premiumVsEconomyMaxRatio} step={0.1} onChange={(v) => setFi({ opportunities: { ...fi.opportunities, premiumVsEconomyMaxRatio: v } })} />
+          <NumberField label="Deal-score penalty: mostly premium" value={fi.cabinQualityPenalty.mostly} onChange={(v) => setFi({ cabinQualityPenalty: { ...fi.cabinQualityPenalty, mostly: v } })} />
+          <NumberField label="Deal-score penalty: mixed cabin" value={fi.cabinQualityPenalty.mixed} onChange={(v) => setFi({ cabinQualityPenalty: { ...fi.cabinQualityPenalty, mixed: v } })} />
+        </div>
+        <h3 style={{ margin: '14px 0 6px' }}>Value of time (off by default — money and burden are reported separately)</h3>
+        <div className="row" style={{ marginBottom: 8 }}>
+          <Check label="Enable monetary value of time (adds a separate 'true trip cost incl. time' figure)" checked={fi.timeValue.enabled} onChange={(v) => setFi({ timeValue: { ...fi.timeValue, enabled: v } })} testId="fi-vot-enabled" />
+        </div>
+        <div className="form-grid">
+          <NumberField label="€ per hour of active travel" value={fi.timeValue.eurPerActiveHour} onChange={(v) => setFi({ timeValue: { ...fi.timeValue, eurPerActiveHour: v } })} />
+          <NumberField label="€ per airport hotel night (extra)" value={fi.timeValue.eurPerHotelNight} onChange={(v) => setFi({ timeValue: { ...fi.timeValue, eurPerHotelNight: v } })} />
+          <NumberField label="€ per transfer" value={fi.timeValue.eurPerTransfer} onChange={(v) => setFi({ timeValue: { ...fi.timeValue, eurPerTransfer: v } })} />
+        </div>
+      </Card>
+      <Card title="Alert thresholds">
+        <h3 style={{ marginBottom: 6 }}>Alert channel by journey value score</h3>
+        <div className="form-grid">
+          {(['digest', 'notification', 'immediate', 'urgent'] as const).map((k) => (
+            <NumberField key={k} label={`${k} ≥ score`} value={draft.alertThresholds[k]} onChange={(v) => setDraft({ ...draft, alertThresholds: { ...draft.alertThresholds, [k]: v } })} />
+          ))}
+        </div>
+        <p className="tiny muted" style={{ marginTop: 6 }}>Below the digest threshold results only appear on the dashboard. Saved together with the fare-intelligence settings above.</p>
+      </Card>
+    </div>
   );
 }
 
@@ -449,7 +506,7 @@ export function SettingsPage() {
           { key: 'home', label: 'Home' },
           { key: 'origins', label: 'Departure airports' },
           { key: 'destination', label: 'Krabi gateways' },
-          { key: 'thresholds', label: 'Deal & alerts' },
+          { key: 'thresholds', label: 'Fare intelligence & alerts' },
           { key: 'providers', label: 'Providers & scheduler' },
         ]}
         active={tab}

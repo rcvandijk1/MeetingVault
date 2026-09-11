@@ -1,4 +1,4 @@
-import { formatDuration, formatEur, type ScoredJourney, type ItineraryLeg, type DealLevel, type ResultLabel, type Cabin } from '@kfr/core';
+import { formatDuration, formatEur, DEAL_LEVEL_LABELS, type ScoredJourney, type ItineraryLeg, type DealLevel, type ResultLabel, type Cabin, type FareConfidence, type CabinQualityLabel, type FareOpportunityType, type OpportunitySeverity } from '@kfr/core';
 
 export { formatDuration, formatEur };
 
@@ -30,12 +30,28 @@ export function routeKey(j: ScoredJourney): string {
 }
 
 export const DEAL_COLORS: Record<DealLevel, string> = {
-  NORMAL: 'var(--c-muted)',
-  GOOD: 'var(--c-good)',
-  EXCELLENT: 'var(--c-excellent)',
   EXCEPTIONAL: 'var(--c-exceptional)',
-  INSANE: 'var(--c-insane)',
+  EXCELLENT: 'var(--c-excellent)',
+  GOOD: 'var(--c-good)',
+  NORMAL: 'var(--c-text-dim)',
+  EXPENSIVE: 'var(--c-warn)',
+  VERY_EXPENSIVE: 'var(--c-danger)',
+  UNKNOWN: 'var(--c-muted)',
 };
+export const dealLabel = (l: DealLevel): string => DEAL_LEVEL_LABELS[l];
+
+export const CONFIDENCE_COLORS: Record<FareConfidence, string> = { HIGH: 'var(--c-good)', MEDIUM: 'var(--c-warn)', LOW: 'var(--c-muted)', NONE: 'var(--c-muted)' };
+export const CABIN_QUALITY_TEXT: Record<CabinQualityLabel, string> = { FULL: 'Full', MOSTLY: 'Mostly', MIXED: 'Mixed' };
+export const OPPORTUNITY_TEXT: Record<FareOpportunityType, string> = {
+  NEW_LOW: 'New low',
+  SIGNIFICANT_DROP: 'Price drop',
+  HISTORICAL_OUTLIER: 'Historical outlier',
+  ALTERNATIVE_AIRPORT_OPPORTUNITY: 'Alternative airport',
+  PREMIUM_CABIN_ANOMALY: 'Premium cabin anomaly',
+  ROUTING_OPPORTUNITY: 'Routing opportunity',
+};
+export const SEVERITY_CLASS: Record<OpportunitySeverity, string> = { STRONG: 'accent', NOTABLE: 'good', INFO: '' };
+export const fmtSignedPct = (n: number | null | undefined, digits = 0): string => (n === null || n === undefined ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(digits)}%`);
 
 export const LABEL_TEXT: Record<ResultLabel, string> = {
   CHEAPEST: 'Cheapest',

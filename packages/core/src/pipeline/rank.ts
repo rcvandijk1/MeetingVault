@@ -37,6 +37,8 @@ export function explainScore(scores: Record<ScoreCategory, number>, weights: Sco
 export interface RankOptions {
   weights: ScoreWeights;
   baselineOrigin: string;
+  /** EUR per hour of extra active travel burden, used only for the "break-even including time" figure. null = disabled. */
+  valueOfTimeEurPerHour?: number | null;
 }
 
 /**
@@ -46,7 +48,10 @@ export interface RankOptions {
  * instant re-scoring in the UI possible without a new search.
  */
 export function rankJourneys(input: ScoredJourney[], opts: RankOptions): ScoredJourney[] {
-  const journeys = input.map((j) => ({ ...j, overallScore: computeOverall(j.categoryScores, opts.weights), labels: [] as ResultLabel[] }));
+  const journeys = input.map((j) => {
+    const overall = computeOverall(j.categoryScores, opts.weights);
+    return { ...j, overallScore: overall, journeyValueScore: overall, labels: [] as ResultLabel[] };
+  });
   journeys.sort((a, b) => b.overallScore - a.overallScore || a.cost.trueJourneyCost - b.cost.trueJourneyCost || a.itinerary.id.localeCompare(b.itinerary.id));
   journeys.forEach((j, i) => (j.rank = i + 1));
   if (journeys.length === 0) return journeys;
@@ -77,22 +82,29 @@ function applyBaselineAndLabels(journeys: ScoredJourney[], opts: RankOptions): v
 
   for (const j of journeys) {
     if (!baseline) {
-      j.baseline = { baselineItineraryId: null, baselineOrigin: null, baselineStrategy: 'NONE', savingVsBaseline: null, extraMinutesVsBaseline: null, savingPerExtraHour: null, dominant: false, isBaseline: false };
+      j.baseline = { baselineItineraryId: null, baselineOrigin: null, baselineStrategy: 'NONE', savingVsBaseline: null, airfareSavingVsBaseline: null, extraMinutesVsBaseline: null, savingPerExtraHour: null, dominant: false, isBaseline: false, breakEvenFareEur: null, breakEvenFareWithTimeEur: null };
       continue;
     }
     const isBaseline = j.itinerary.id === baseline.itinerary.id;
     const saving = Math.round((baseline.cost.trueJourneyCost - j.cost.trueJourneyCost) * 100) / 100;
     const extra = j.totalActiveTravelBurdenMinutes - baseline.totalActiveTravelBurdenMinutes;
     const savingPerExtraHour = !isBaseline && saving > 0 && extra > 0 ? Math.round((saving / (extra / 60)) * 100) / 100 : null;
+    // Break-even: the airfare at which this journey's true cost equals the baseline's.
+    const breakEven = isBaseline ? null : Math.round((j.itinerary.fareEur + saving) * 100) / 100;
+    const vot = opts.valueOfTimeEurPerHour ?? null;
+    const breakEvenWithTime = breakEven !== null && vot !== null ? Math.round((breakEven - Math.max(0, extra) * (vot / 60)) * 100) / 100 : null;
     j.baseline = {
       baselineItineraryId: baseline.itinerary.id,
       baselineOrigin: baseline.itinerary.originAirport,
       baselineStrategy: strategy,
       savingVsBaseline: isBaseline ? null : saving,
+      airfareSavingVsBaseline: isBaseline ? null : Math.round((baseline.itinerary.fareEur - j.itinerary.fareEur) * 100) / 100,
       extraMinutesVsBaseline: isBaseline ? null : extra,
       savingPerExtraHour,
       dominant: !isBaseline && saving > 0 && extra <= 0,
       isBaseline,
+      breakEvenFareEur: breakEven,
+      breakEvenFareWithTimeEur: breakEvenWithTime,
     };
   }
 

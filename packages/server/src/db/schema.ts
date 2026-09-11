@@ -1,9 +1,11 @@
+import { sql } from 'drizzle-orm';
 import { boolean, index, integer, jsonb, pgTable, real, text, timestamp, uniqueIndex, varchar } from 'drizzle-orm/pg-core';
 import type {
   Cabin,
   AlertThresholds,
   DealLevel,
-  DealThresholds,
+  FareIntelligenceConfig,
+  FareOpportunity,
   NormalizedItinerary,
   ScoreCategory,
   ScoreReason,
@@ -38,7 +40,8 @@ export const appSettings = pgTable('app_settings', {
   airportExitMinutes: integer('airport_exit_minutes').notNull(),
   currency: varchar('currency', { length: 3 }).notNull(),
   fxRatesToEur: jsonb('fx_rates_to_eur').$type<Record<string, number>>().notNull(),
-  dealThresholds: jsonb('deal_thresholds').$type<DealThresholds>().notNull(),
+  /** Partial config; missing keys fall back to the core defaults (`mergeFareIntelligenceConfig`). */
+  fareIntelligence: jsonb('fare_intelligence').$type<Partial<FareIntelligenceConfig>>().notNull().default({}),
   alertThresholds: jsonb('alert_thresholds').$type<AlertThresholds>().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -227,7 +230,7 @@ export const scoreResults = pgTable(
     categoryScores: jsonb('category_scores').$type<Record<ScoreCategory, number>>().notNull(),
     reasons: jsonb('reasons').$type<ScoreReason[]>().notNull(),
     labels: jsonb('labels').$type<ResultLabel[]>().notNull(),
-    dealLevel: varchar('deal_level', { length: 12 }).notNull(),
+    dealLevel: varchar('deal_level', { length: 16 }).notNull(),
     deal: jsonb('deal').$type<DealAssessment>().notNull(),
     paretoDominated: boolean('pareto_dominated').notNull(),
     dominatedBy: text('dominated_by'),
@@ -258,8 +261,60 @@ export const fareObservations = pgTable(
     provider: varchar('provider', { length: 32 }).notNull(),
     itineraryFingerprint: varchar('itinerary_fingerprint', { length: 32 }).notNull(),
     searchRunId: text('search_run_id').references(() => searchRuns.id, { onDelete: 'set null' }),
+    // --- fare-intelligence enrichment (nullable: rows written before the engine existed are backfilled where possible) ---
+    tripDays: integer('trip_days'),
+    daysToDeparture: integer('days_to_departure'),
+    stopsOutbound: integer('stops_outbound'),
+    stopsInbound: integer('stops_inbound'),
+    connectionAirports: jsonb('connection_airports').$type<string[]>(),
+    outboundDepartureLocal: varchar('outbound_departure_local', { length: 16 }),
+    outboundArrivalLocal: varchar('outbound_arrival_local', { length: 16 }),
+    inboundDepartureLocal: varchar('inbound_departure_local', { length: 16 }),
+    inboundArrivalLocal: varchar('inbound_arrival_local', { length: 16 }),
+    totalDurationMinutes: integer('total_duration_minutes'),
+    taxesEur: real('taxes_eur'),
+    providerOfferId: text('provider_offer_id'),
+    premiumCabinPercent: real('premium_cabin_percent'),
+    longHaulPremiumPercent: real('long_haul_premium_percent'),
+    cabinQuality: varchar('cabin_quality', { length: 8 }),
+    routeFamily: varchar('route_family', { length: 32 }),
+    verified: boolean('verified').notNull().default(false),
+    fareVerifiedEur: real('fare_verified_eur'),
   },
-  (t) => [index('fare_observations_route_idx').on(t.originAirport, t.arrivalGateway, t.cabin, t.observedAt), index('fare_observations_fp_idx').on(t.itineraryFingerprint, t.observedAt)],
+  (t) => [
+    index('fare_observations_route_idx').on(t.originAirport, t.arrivalGateway, t.cabin, t.observedAt),
+    index('fare_observations_fp_idx').on(t.itineraryFingerprint, t.observedAt),
+    // One observation per offer per run per instant: re-pricing later in the same run is a new observation, a duplicate insert is not.
+    uniqueIndex('fare_observations_offer_run_idx').on(t.searchRunId, t.provider, t.providerOfferId, t.observedAt).where(sql`provider_offer_id is not null`),
+  ],
+);
+
+/** FareOpportunity events raised by search runs (new low, significant drop, historical outlier, …). */
+export const fareOpportunities = pgTable(
+  'fare_opportunities',
+  {
+    id: text('id').primaryKey(),
+    searchRunId: text('search_run_id')
+      .notNull()
+      .references(() => searchRuns.id, { onDelete: 'cascade' }),
+    itineraryId: text('itinerary_id')
+      .notNull()
+      .references(() => itineraries.id, { onDelete: 'cascade' }),
+    fingerprint: varchar('fingerprint', { length: 32 }).notNull(),
+    type: varchar('type', { length: 40 }).notNull(),
+    severity: varchar('severity', { length: 12 }).notNull(),
+    confidence: varchar('confidence', { length: 8 }).notNull(),
+    reason: text('reason').notNull(),
+    metrics: jsonb('metrics').$type<FareOpportunity['metrics']>().notNull().default({}),
+    originAirport: varchar('origin_airport', { length: 3 }).notNull(),
+    arrivalGateway: varchar('arrival_gateway', { length: 3 }).notNull(),
+    cabin: varchar('cabin', { length: 16 }).notNull(),
+    fareEur: real('fare_eur').notNull(),
+    dealScore: real('deal_score'),
+    classification: varchar('classification', { length: 16 }).notNull(),
+    detectedAt: timestamp('detected_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [index('fare_opportunities_run_idx').on(t.searchRunId), index('fare_opportunities_time_idx').on(t.detectedAt), index('fare_opportunities_fp_idx').on(t.fingerprint, t.type)],
 );
 
 /** Cross-run tracking of physical itineraries. */

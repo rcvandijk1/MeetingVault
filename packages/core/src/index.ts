@@ -7,6 +7,7 @@ export * from './currency.js';
 export * from './normalize.js';
 export * from './data/airports.js';
 export * from './pipeline/index.js';
+export * from './intelligence/index.js';
 export * from './providers/index.js';
 export * from './notifications.js';
 export * from './context.js';

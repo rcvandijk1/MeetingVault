@@ -63,9 +63,9 @@ export function selfTransferRiskScore(legs: ItineraryLeg[], params: ScoringParam
   return clamp100(score);
 }
 
-export function fareAnomalyScore(deal: DealAssessment): number {
-  if (deal.percentBelowReference === null) return 50;
-  return clamp100(50 + deal.percentBelowReference * 2);
+/** The fare-deal category is the Deal Score itself (50 = neutral / no reference). */
+export function fareAnomalyScore(deal: Pick<DealAssessment, 'dealScore'>): number {
+  return deal.dealScore === null ? 50 : clamp100(deal.dealScore);
 }
 
 export interface CategoryScoring {
@@ -117,11 +117,13 @@ export function scoreCategories(j: EnrichedJourney, stats: SetStats, ctx: Pipeli
 
   // Fare anomaly
   const fareAnomaly = fareAnomalyScore(deal);
+  const refText = deal.source === 'HISTORY' ? `the historical median of comparable fares (${deal.confidence.toLowerCase()} confidence)` : 'comparable fares in this search';
   if (deal.percentBelowReference !== null && deal.percentBelowReference >= 10) {
-    reasons.push({ sign: '+', text: `${Math.round(deal.percentBelowReference)}% below ${deal.source === 'HISTORY' ? 'recently observed comparable fares' : 'comparable fares in this search'}`, category: 'fareAnomaly' });
+    reasons.push({ sign: '+', text: `${Math.round(deal.percentBelowReference)}% below ${refText}`, category: 'fareAnomaly' });
   } else if (deal.percentBelowReference !== null && deal.percentBelowReference <= -10) {
-    reasons.push({ sign: '-', text: `${Math.round(-deal.percentBelowReference)}% above ${deal.source === 'HISTORY' ? 'recently observed comparable fares' : 'comparable fares in this search'}`, category: 'fareAnomaly' });
+    reasons.push({ sign: '-', text: `${Math.round(-deal.percentBelowReference)}% above ${refText}`, category: 'fareAnomaly' });
   }
+  if (deal.trend?.isNewLow && deal.trend.timesSeenBefore >= 3) reasons.push({ sign: '+', text: 'Lowest price seen so far for these flights', category: 'fareAnomaly' });
 
   // Cabin
   let cabinQuality = it.cabinSummary.premiumCabinPercent;

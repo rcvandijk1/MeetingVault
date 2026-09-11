@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { AIRPORTS, DEFAULT_ALERT_THRESHOLDS, DEFAULT_DEAL_THRESHOLDS, DEFAULT_GATEWAYS, DEFAULT_GROUND_TRANSFERS, DEFAULT_HOME, DEFAULT_ORIGIN_PROFILES, buildDefaultProfile } from '@kfr/core';
+import { AIRPORTS, DEFAULT_ALERT_THRESHOLDS, DEFAULT_FARE_INTELLIGENCE, DEFAULT_GATEWAYS, DEFAULT_GROUND_TRANSFERS, DEFAULT_HOME, DEFAULT_ORIGIN_PROFILES, buildDefaultProfile } from '@kfr/core';
 import type { Database } from './client.js';
 import { airports, appSettings, destinationGateways, groundTransferProfiles, originAccessProfiles, tripProfiles } from './schema.js';
 
@@ -25,7 +25,7 @@ export async function seedDatabase(db: Database): Promise<{ inserted: Record<str
       airportExitMinutes: DEFAULT_HOME.airportExitMinutes,
       currency: DEFAULT_HOME.currency,
       fxRatesToEur: DEFAULT_HOME.fxRatesToEur,
-      dealThresholds: DEFAULT_DEAL_THRESHOLDS,
+      fareIntelligence: DEFAULT_FARE_INTELLIGENCE,
       alertThresholds: DEFAULT_ALERT_THRESHOLDS,
     })
     .onConflictDoNothing()

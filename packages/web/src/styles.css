@@ -639,8 +639,29 @@ td.best {
 }
 .deal-counts {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 10px;
+}
+.conf-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.explain {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.explain li + li {
+  margin-top: 4px;
+}
+.explain.tiny {
+  font-size: 11px;
+  color: var(--c-muted);
 }
 .deal-count {
   padding: 12px 14px;

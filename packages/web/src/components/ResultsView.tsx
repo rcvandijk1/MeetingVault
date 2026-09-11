@@ -8,7 +8,7 @@ import { WeightsPanel } from './WeightsPanel';
 import { OriginMatrix } from './OriginMatrix';
 import { JourneyDetail } from './JourneyDetail';
 import { Card, Drawer, Tabs } from './ui';
-import { EMPTY_FILTERS, SORT_OPTIONS, applyFilters, type ResultFilters, type SortKey } from '../lib/journeys';
+import { DEFAULT_SORT_DIR, EMPTY_FILTERS, SORT_OPTIONS, applyFilters, type ResultFilters, type SortKey } from '../lib/journeys';
 
 interface Props {
   journeys: ScoredJourney[];
@@ -70,7 +70,7 @@ export function ResultsView({ journeys, profile, initialWeights, title, runId }:
                   onChange={(e) => {
                     const k = e.target.value as SortKey;
                     setSort(k);
-                    setSortDir(k === 'score' || k === 'savingPerExtraHour' ? 'desc' : 'asc');
+                    setSortDir(DEFAULT_SORT_DIR[k]);
                   }}
                 >
                   {SORT_OPTIONS.map((o) => (

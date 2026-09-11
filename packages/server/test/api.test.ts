@@ -64,13 +64,17 @@ describe('reference & settings', () => {
   });
 
   it('reads and updates home settings', async () => {
-    const before = await get<{ home: { name: string; fxRatesToEur: Record<string, number> }; dealThresholds: { good: number } }>('/api/settings');
+    const before = await get<{ home: { name: string; fxRatesToEur: Record<string, number> }; fareIntelligence: { thresholds: { good: number }; timeValue: { enabled: boolean } } }>('/api/settings');
     expect(before.body.home.name).toBe('Alphen aan den Rijn');
-    const updated = await send<{ home: { hotelEveningDepartureTime: string }; dealThresholds: { good: number } }>('PUT', '/api/settings', { home: { ...before.body.home, hotelEveningDepartureTime: '19:00' }, dealThresholds: { ...before.body.dealThresholds, good: 6 } });
+    expect(before.body.fareIntelligence.thresholds.good).toBe(85);
+    expect(before.body.fareIntelligence.timeValue.enabled).toBe(false);
+    const updated = await send<{ home: { hotelEveningDepartureTime: string }; fareIntelligence: { thresholds: { good: number } } }>('PUT', '/api/settings', { home: { ...before.body.home, hotelEveningDepartureTime: '19:00' }, fareIntelligence: { ...before.body.fareIntelligence, thresholds: { ...before.body.fareIntelligence.thresholds, good: 80 } } });
     expect(updated.status).toBe(200);
     expect(updated.body.home.hotelEveningDepartureTime).toBe('19:00');
-    expect(updated.body.dealThresholds.good).toBe(6);
-    await send('PUT', '/api/settings', { home: { ...before.body.home } });
+    expect(updated.body.fareIntelligence.thresholds.good).toBe(80);
+    const inverted = await send<{ error: string }>('PUT', '/api/settings', { fareIntelligence: { ...before.body.fareIntelligence, thresholds: { exceptional: 90, excellent: 72, good: 85, normal: 115, expensive: 135 } } });
+    expect(inverted.status).toBe(400);
+    await send('PUT', '/api/settings', { home: { ...before.body.home }, fareIntelligence: before.body.fareIntelligence });
   });
 
   it('rejects invalid settings with a 400', async () => {
@@ -198,6 +202,75 @@ describe('search, persistence and scoring', () => {
     expect(summary.body.length).toBeGreaterThan(3);
     const filtered = await get<{ observations: Array<{ originAirport: string }> }>('/api/history?origin=DUS&gateway=HKT');
     expect(filtered.body.observations.every((o) => o.originAirport === 'DUS')).toBe(true);
+  });
+
+  it('enriches observations with trip, timing and cabin-quality fields and records provider traceability', async () => {
+    const h = await get<{ observations: Array<Record<string, unknown>> }>('/api/history?origin=AMS&gateway=KBV&cabin=BUSINESS');
+    const o = h.body.observations[0]!;
+    expect(o.tripDays).toBeGreaterThan(10);
+    expect(o.daysToDeparture).toBeGreaterThan(30);
+    expect(o.stopsOutbound).toBeGreaterThanOrEqual(1);
+    expect(Array.isArray(o.connectionAirports)).toBe(true);
+    expect(o.outboundDepartureLocal).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(o.totalDurationMinutes).toBeGreaterThan(600);
+    expect(['FULL', 'MOSTLY', 'MIXED']).toContain(o.cabinQuality);
+    expect(o.routeFamily).toBe('KRABI_REGION');
+    expect(o.providerOfferId).toBeTruthy();
+    expect(o.provider).toBe('mock');
+    expect(o.verified).toBe(false);
+  });
+
+  it('never records the same offer twice within one run', async () => {
+    const run = await get<{ journeys: ScoredJourney[] }>(`/api/search/${runId}`);
+    const all = await deps.repos.queryObservations({ limit: 100000 });
+    const inRun = all.filter((o) => o.searchRunId === runId);
+    const keys = inRun.map((o) => `${o.provider}|${o.providerOfferId}|${o.observedAt}`);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(inRun.length).toBeGreaterThanOrEqual(run.body.journeys.length);
+  });
+
+  it('serves the deal explorer with classification, confidence, market position and cohort details', async () => {
+    const r = await get<{ run: { id: string }; journeys: ScoredJourney[]; summary: { byClassification: Record<string, number>; byConfidence: Record<string, number>; total: number }; opportunities: unknown[]; observationCount: number }>('/api/deals?cabin=BUSINESS');
+    expect(r.status).toBe(200);
+    expect(r.body.run).toBeTruthy();
+    expect(r.body.summary.total).toBe(r.body.journeys.length);
+    expect(r.body.observationCount).toBeGreaterThan(0);
+    expect(Object.keys(r.body.summary.byClassification)).toContain('VERY_EXPENSIVE');
+    for (const j of r.body.journeys) {
+      expect(['EXCEPTIONAL', 'EXCELLENT', 'GOOD', 'NORMAL', 'EXPENSIVE', 'VERY_EXPENSIVE', 'UNKNOWN']).toContain(j.deal.level);
+      expect(['HIGH', 'MEDIUM', 'LOW', 'NONE']).toContain(j.deal.confidence);
+      expect(j.deal.cabinQuality.label).toBeTruthy();
+      expect(j.deal.market).toBeTruthy();
+      expect(j.journeyValueScore).toBe(j.overallScore);
+      expect(j.deal.explanations.join(' ')).not.toMatch(/discount/i);
+    }
+    // Repeated runs have built history for the same physical itineraries: the trend is populated and cohorts are historical.
+    const withTrend = r.body.journeys.filter((j) => j.deal.trend !== null);
+    expect(withTrend.length).toBeGreaterThan(0);
+    expect(withTrend[0]!.deal.trend!.timesSeenBefore).toBeGreaterThanOrEqual(1);
+    const historical = r.body.journeys.filter((j) => j.deal.source === 'HISTORY');
+    expect(historical.length).toBeGreaterThan(0);
+    expect(historical[0]!.deal.cohort!.level).toBeGreaterThanOrEqual(1);
+    expect(historical[0]!.deal.stats!.median).toBeGreaterThan(0);
+    // Search-distribution or historical, never HIGH confidence on a handful of same-day observations.
+    expect(r.body.journeys.every((j) => j.deal.confidence !== 'HIGH')).toBe(true);
+    expect((await get('/api/deals?runId=nope')).status).toBe(404);
+  });
+
+  it('lists opportunities and fingerprint price history', async () => {
+    const opp = await get<Array<{ type: string; itineraryId: string; reason: string; searchRunId: string }>>('/api/opportunities?days=30');
+    expect(opp.status).toBe(200);
+    for (const o of opp.body) expect(['NEW_LOW', 'SIGNIFICANT_DROP', 'HISTORICAL_OUTLIER', 'ALTERNATIVE_AIRPORT_OPPORTUNITY', 'PREMIUM_CABIN_ANOMALY', 'ROUTING_OPPORTUNITY']).toContain(o.type);
+    const typed = await get<Array<{ type: string }>>('/api/opportunities?type=ALTERNATIVE_AIRPORT_OPPORTUNITY');
+    expect(typed.body.every((o) => o.type === 'ALTERNATIVE_AIRPORT_OPPORTUNITY')).toBe(true);
+    const radar = await get<{ opportunities: unknown[] }>('/api/radar');
+    expect(Array.isArray(radar.body.opportunities)).toBe(true);
+    const fp = journeys[0]!.itinerary.fingerprint;
+    const hist = await get<{ count: number; observations: Array<{ fareEur: number }>; stats: { median: number } | null; trend: { timesSeenBefore: number; lowestSeenEur: number } | null }>(`/api/history/fingerprint/${fp}?currentFareEur=${journeys[0]!.itinerary.fareEur}`);
+    expect(hist.status).toBe(200);
+    expect(hist.body.count).toBeGreaterThanOrEqual(2);
+    expect(hist.body.stats!.median).toBeGreaterThan(0);
+    expect(hist.body.trend!.timesSeenBefore).toBeGreaterThanOrEqual(1);
   });
 
   it('tracks first seen across runs', async () => {

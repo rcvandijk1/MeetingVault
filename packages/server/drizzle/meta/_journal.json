@@ -22,6 +22,20 @@
       "when": 1788935481007,
       "tag": "0002_drop_legacy_cabin_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789158928457,
+      "tag": "0003_fare_intelligence",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789158955123,
+      "tag": "0004_drop_deal_thresholds",
+      "breakpoints": true
     }
   ]
 }

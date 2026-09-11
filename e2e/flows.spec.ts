@@ -212,6 +212,43 @@ test.describe('Krabi Flight Radar', () => {
     await expect(page.getByTestId('compare-table')).toBeHidden();
   });
 
+  test('deal explorer classifies fares, explains them and charts the fare history', async ({ page }) => {
+    await runSearchAndOpenResults(page);
+    await page.getByTestId('nav-deals').click();
+    await expect(page).toHaveURL(/\/deals/);
+    await expect(page.getByTestId('deal-summary')).toBeVisible();
+    await expect(page.getByTestId('deals-cabin')).toHaveValue('BUSINESS');
+    await expect(page.getByTestId('deals-coverage')).toContainText('observations stored');
+    const rows = page.getByTestId('deal-row');
+    await expect(rows.first()).toBeVisible();
+    // Sorting and filtering.
+    await page.getByTestId('deals-sort').selectOption('airfare');
+    await expect(rows.first()).toBeVisible();
+    await page.getByTestId('chip-FULL').click();
+    await expect(page.getByTestId('cabin-quality-FULL').first()).toBeVisible();
+    // The detail drawer opens on the fare-deal tab with explanations, market position and the history chart.
+    await rows.first().click();
+    await expect(page.getByTestId('journey-drawer')).toBeVisible();
+    await page.getByTestId('tab-deal').click();
+    await expect(page.getByTestId('deal-panel')).toBeVisible();
+    await expect(page.getByTestId('deal-explanations')).toBeVisible();
+    const text = await page.getByTestId('deal-panel').innerText();
+    expect(text).not.toMatch(/discount/i);
+    expect(text).toMatch(/Deal score|Fare deal score/);
+    await expect(page.getByTestId('deal-costs')).toContainText('disabled');
+    await page.getByTestId('drawer-close').click();
+    // Settings expose the classification thresholds.
+    await page.goto('/settings');
+    await page.getByTestId('tab-thresholds').click();
+    await expect(page.getByTestId('fi-threshold-exceptional')).toHaveValue('60');
+    await page.getByTestId('fi-threshold-good').fill('84');
+    await page.getByTestId('fi-save').click();
+    await expect(page.getByTestId('fi-status')).toHaveText(/saved/i);
+    await page.getByTestId('fi-threshold-good').fill('85');
+    await page.getByTestId('fi-save').click();
+    await expect(page.getByTestId('fi-status')).toHaveText(/saved/i);
+  });
+
   test('radar shows deal levels and settings are editable', async ({ page }) => {
     await page.goto('/');
     await expect(page.getByTestId('deal-counts')).toBeVisible();

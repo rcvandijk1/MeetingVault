@@ -229,20 +229,14 @@ export class VerificationWorker {
       const verifiedAt = this.now().toISOString();
       const verifiedFare: VerifiedFare = { amount: result.finalPrice, currency: result.currency, amountEur: finalPriceEur, verifiedAt, source: `${driver.kind === 'BROWSER' ? 'booking-flow' : 'api'}:${driver.name}`, breakdown: result.breakdown };
       await repos.updateVerification(id, { status: 'VERIFIED', finalPrice: result.finalPrice, finalCurrency: result.currency, finalPriceEur, breakdown: result.breakdown, steps: result.steps, finishedAt: this.now(), error: null });
+      // The verified final price is an observation in its own right, flagged so cohorts can tell quoted from verified fares.
       await repos.addObservation({
-        observedAt: verifiedAt,
-        originAirport: journey.itinerary.originAirport,
-        arrivalGateway: journey.itinerary.arrivalGateway,
-        outboundDate: journey.itinerary.outbound.departureLocal.slice(0, 10),
-        inboundDate: journey.itinerary.inbound.departureLocal.slice(0, 10),
-        airline: journey.itinerary.primaryAirline,
-        cabin: journey.itinerary.cabinSummary.requestedCabin,
+        ...repos.observationFor({ ...journey.itinerary, verifiedFare }, verifiedAt, await repos.getItineraryRunId(itineraryId)),
         fare: result.finalPrice,
         currency: result.currency,
         fareEur: finalPriceEur,
         provider: verifiedFare.source,
-        itineraryFingerprint: journey.itinerary.fingerprint,
-        searchRunId: await repos.getItineraryRunId(itineraryId),
+        providerOfferId: `${journey.itinerary.providerOfferId}#verified`,
       });
       await this.deps.searchService.applyVerifiedFare(itineraryId, verifiedFare);
       this.stats.processed++;

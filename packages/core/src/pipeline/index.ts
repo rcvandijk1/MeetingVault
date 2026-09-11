@@ -5,7 +5,9 @@ import { enrichJourney } from './enrich.js';
 import { assessDeal } from './deal.js';
 import { computeSetStats, scoreCategories } from './scoring.js';
 import { paretoAnalysis } from './pareto.js';
-import { rankJourneys } from './rank.js';
+import { rankJourneys, type RankOptions } from './rank.js';
+import { detectOpportunities } from '../intelligence/opportunities.js';
+import { DEAL_LEVELS } from '../types.js';
 
 export * from './constraints.js';
 export * from './enrich.js';
@@ -15,7 +17,7 @@ export * from './pareto.js';
 export * from './deal.js';
 export * from './rank.js';
 
-const emptyDealCounts = (): Record<DealLevel, number> => ({ NORMAL: 0, GOOD: 0, EXCELLENT: 0, EXCEPTIONAL: 0, INSANE: 0 });
+export const emptyDealCounts = (): Record<DealLevel, number> => Object.fromEntries(DEAL_LEVELS.map((l) => [l, 0])) as Record<DealLevel, number>;
 
 /**
  * TRIP INTENT → (providers) → NORMALIZATION → DEDUPLICATION → HARD FILTERS →
@@ -42,15 +44,16 @@ export function runPipeline(itineraries: NormalizedItinerary[], ctx: PipelineCon
   const stats = enriched.length > 0 ? computeSetStats(enriched, ctx.profile.scoringParams) : { bestTrueCost: 0, bestActiveBurden: 0 };
 
   const scored: ScoredJourney[] = enriched.map((j) => {
-    const deal = assessDeal(j.itinerary, accepted, ctx.history, ctx.dealThresholds);
+    const deal = assessDeal(j.itinerary, accepted, ctx, j);
     const cs = scoreCategories(j, stats, ctx, deal);
     return {
       ...j,
       categoryScores: cs.scores,
       overallScore: 0,
+      journeyValueScore: 0,
       reasons: cs.reasons,
       labels: [],
-      baseline: { baselineItineraryId: null, baselineOrigin: null, baselineStrategy: 'NONE', savingVsBaseline: null, extraMinutesVsBaseline: null, savingPerExtraHour: null, dominant: false, isBaseline: false },
+      baseline: { baselineItineraryId: null, baselineOrigin: null, baselineStrategy: 'NONE', savingVsBaseline: null, airfareSavingVsBaseline: null, extraMinutesVsBaseline: null, savingPerExtraHour: null, dominant: false, isBaseline: false, breakEvenFareEur: null, breakEvenFareWithTimeEur: null },
       deal,
       paretoDominated: false,
       dominatedBy: null,
@@ -71,7 +74,8 @@ export function runPipeline(itineraries: NormalizedItinerary[], ctx: PipelineCon
     }
   }
 
-  const journeys = rankJourneys(scored, { weights: ctx.profile.scoringWeights, baselineOrigin: ctx.profile.baselineOrigin });
+  const journeys = rankJourneys(scored, rankOptions(ctx));
+  const opportunities = detectOpportunities(journeys, ctx);
   const dealCounts = emptyDealCounts();
   for (const j of journeys) dealCounts[j.deal.level]++;
 
@@ -86,10 +90,16 @@ export function runPipeline(itineraries: NormalizedItinerary[], ctx: PipelineCon
       paretoDominated: journeys.filter((j) => j.paretoDominated).length,
       dealCounts,
     },
+    opportunities,
   };
 }
 
+/** Rank options derived from the context: profile weights and baseline, value of time only when enabled. */
+export function rankOptions(ctx: Pick<PipelineContext, 'fareIntelligence' | 'profile'>): RankOptions {
+  return { weights: ctx.profile.scoringWeights, baselineOrigin: ctx.profile.baselineOrigin, valueOfTimeEurPerHour: ctx.fareIntelligence.timeValue.enabled ? ctx.fareIntelligence.timeValue.eurPerActiveHour : null };
+}
+
 /** Re-scores already loaded journeys with new weights, without touching providers. */
-export function rescoreJourneys(journeys: ScoredJourney[], weights: ScoreWeights, baselineOrigin: string): ScoredJourney[] {
-  return rankJourneys(journeys, { weights, baselineOrigin });
+export function rescoreJourneys(journeys: ScoredJourney[], weights: ScoreWeights, baselineOrigin: string, valueOfTimeEurPerHour: number | null = null): ScoredJourney[] {
+  return rankJourneys(journeys, { weights, baselineOrigin, valueOfTimeEurPerHour });
 }

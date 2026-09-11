@@ -4,7 +4,8 @@ import type { ItineraryLeg, ScoreWeights, ScoredJourney } from '@kfr/core';
 import { api } from '../api/client';
 import { useInvalidate } from '../api/hooks';
 import { useCompareStore } from '../store/compare';
-import { DealBadge, LabelChips, ScorePill } from './Badges';
+import { CabinQualityBadge, DealBadge, LabelChips, OpportunityChip, ScorePill } from './Badges';
+import { DealPanel } from './DealPanel';
 import { ScoreBreakdownContent } from './ScoreBreakdown';
 import { VerificationPanel } from './VerificationPanel';
 import { Tabs } from './ui';
@@ -49,7 +50,7 @@ function Leg({ leg, title }: { leg: ItineraryLeg; title: string }) {
 }
 
 export function JourneyDetail({ journey, weights, baselineOrigin }: { journey: ScoredJourney; weights: ScoreWeights; baselineOrigin?: string }) {
-  const [tab, setTab] = useState<'overview' | 'flights' | 'score'>('overview');
+  const [tab, setTab] = useState<'overview' | 'deal' | 'flights' | 'score'>('overview');
   const [j, setJ] = useState(journey);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMsg, setRefreshMsg] = useState<string | null>(null);
@@ -90,8 +91,12 @@ export function JourneyDetail({ journey, weights, baselineOrigin }: { journey: S
               {it.primaryAirlineName ?? it.primaryAirline} {cabinLabel(it.cabinSummary.requestedCabin)} · {fmtDate(it.outbound.departureLocal)} → {fmtDate(it.inbound.departureLocal)} ({j.tripDays} days)
             </div>
             <div className="row" style={{ marginTop: 4 }}>
-              <DealBadge level={j.deal.level} />
+              <DealBadge level={j.deal.level} deal={j.deal} />
+              <CabinQualityBadge label={j.deal.cabinQuality.label} cabin={it.cabinSummary.requestedCabin} />
               <LabelChips labels={j.labels} baselineOrigin={baselineOrigin} />
+              {j.deal.opportunities.map((o) => (
+                <OpportunityChip key={o.id} o={o} />
+              ))}
             </div>
           </div>
         </div>
@@ -106,7 +111,7 @@ export function JourneyDetail({ journey, weights, baselineOrigin }: { journey: S
       </div>
       {refreshMsg && <div className="small muted">{refreshMsg}</div>}
 
-      <Tabs tabs={[{ key: 'overview', label: 'Overview' }, { key: 'flights', label: 'Flights' }, { key: 'score', label: 'Score' }]} active={tab} onChange={setTab} />
+      <Tabs tabs={[{ key: 'overview', label: 'Overview' }, { key: 'deal', label: 'Fare deal' }, { key: 'flights', label: 'Flights' }, { key: 'score', label: 'Score' }]} active={tab} onChange={setTab} />
 
       {tab === 'overview' && (
         <div className="grid grid-2">
@@ -180,20 +185,27 @@ export function JourneyDetail({ journey, weights, baselineOrigin }: { journey: S
               {j.paretoDominated && <p className="small muted" style={{ marginTop: 6 }}>Pareto-dominated: another journey is at least as cheap, as fast and as convenient.</p>}
             </div>
             <div>
-              <h3 style={{ marginBottom: 6 }}>Fare quality</h3>
+              <h3 style={{ marginBottom: 6 }}>
+                Fare quality{' '}
+                <button type="button" className="btn ghost sm" style={{ marginLeft: 6 }} onClick={() => setTab('deal')} data-testid="detail-open-deal">
+                  full explanation
+                </button>
+              </h3>
               <dl className="kv">
-                <dt>Deal level</dt>
+                <dt>Classification</dt>
                 <dd>
-                  <DealBadge level={j.deal.level} />
+                  <DealBadge level={j.deal.level} deal={j.deal} />
                 </dd>
-                <dt>Observed normal range</dt>
+                <dt>Typical range (p25–p75)</dt>
                 <dd className="mono">{j.deal.referenceLow !== null ? `${formatEur(j.deal.referenceLow)} – ${formatEur(j.deal.referenceHigh)}` : 'no reference yet'}</dd>
-                <dt>vs reference</dt>
-                <dd className="mono">
+                <dt>vs median</dt>
+                <dd className="mono" data-testid="detail-vs-median">
                   {j.deal.percentBelowReference === null
                     ? '—'
-                    : `${Math.abs(j.deal.percentBelowReference) < 0.5 ? 'at reference' : j.deal.percentBelowReference > 0 ? `${fmtPct(j.deal.percentBelowReference)} below` : `${fmtPct(-j.deal.percentBelowReference)} above`} (${j.deal.source === 'HISTORY' ? `${j.deal.comparableObservations} observations` : 'this search'})`}
+                    : `${Math.abs(j.deal.percentBelowReference) < 0.5 ? 'at median' : j.deal.percentBelowReference > 0 ? `${fmtPct(j.deal.percentBelowReference)} below` : `${fmtPct(-j.deal.percentBelowReference)} above`} (${j.deal.source === 'HISTORY' ? `${j.deal.comparableObservations} observations, ${j.deal.confidence.toLowerCase()} confidence` : 'this search only'})`}
                 </dd>
+                <dt>Saving vs median</dt>
+                <dd className="mono">{formatEur(j.deal.savingVsMedianEur, { sign: true })}</dd>
                 <dt>First seen</dt>
                 <dd className="mono">{fmtInstant(it.firstSeen)}</dd>
                 <dt>Last validated</dt>
@@ -290,6 +302,8 @@ export function JourneyDetail({ journey, weights, baselineOrigin }: { journey: S
           <Leg leg={it.inbound} title="Return" />
         </div>
       )}
+
+      {tab === 'deal' && <DealPanel journey={j} />}
 
       {tab === 'score' && <ScoreBreakdownContent journey={j} weights={weights} />}
     </div>

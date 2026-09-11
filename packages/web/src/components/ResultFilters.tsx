@@ -1,5 +1,5 @@
 import type { DealLevel, ScoredJourney } from '@kfr/core';
-import { DEAL_LEVELS } from '@kfr/core';
+import { DEAL_LEVELS, DEAL_LEVEL_LABELS } from '@kfr/core';
 import { Card, Check, Chips, Field } from './ui';
 import { EMPTY_FILTERS, distinct, type ResultFilters } from '../lib/journeys';
 
@@ -74,8 +74,8 @@ export function ResultFiltersPanel({ journeys, filters, onChange, airlines }: { 
             <Chips options={cabins} selected={filters.cabins} onToggle={(v) => toggle('cabins', v)} />
           </Field>
         )}
-        <Field label="Fare quality">
-          <Chips options={DEAL_LEVELS as DealLevel[]} selected={filters.dealLevels} onToggle={(v) => toggle('dealLevels', v)} />
+        <Field label="Fare classification">
+          <Chips options={DEAL_LEVELS as DealLevel[]} selected={filters.dealLevels} onToggle={(v) => toggle('dealLevels', v)} labels={DEAL_LEVEL_LABELS} />
         </Field>
       </div>
     </Card>

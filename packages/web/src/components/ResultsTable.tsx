@@ -116,7 +116,8 @@ export function ResultsTable({ journeys, weights, baselineOrigin, collapseSimila
           </div>
         </td>
         <td>
-          <DealBadge level={j.deal.level} />
+          <DealBadge level={j.deal.level} deal={j.deal} compact />
+          <div className="tiny muted">{j.deal.percentOfMedian !== null ? `${Math.round(j.deal.percentOfMedian)}% of median` : 'no reference'}</div>
         </td>
         <td className="right">
           <div className="mono">{j.baseline.isBaseline ? 'baseline' : j.baseline.dominant ? <span className="badge accent">dominant</span> : j.baseline.savingPerExtraHour !== null ? `${formatEur(j.baseline.savingPerExtraHour)}/h` : '—'}</div>
@@ -145,7 +146,7 @@ export function ResultsTable({ journeys, weights, baselineOrigin, collapseSimila
             {header('trueCost', 'True cost', 'right')}
             {header('doorToDoor', 'Door → Krabi', 'right')}
             <th>Transfers</th>
-            <th>Fare</th>
+            {header('dealScore', 'Fare deal')}
             {header('savingPerExtraHour', 'Saving / extra h', 'right')}
             <th />
           </tr>

@@ -1,9 +1,16 @@
 import type {
   Airport,
   AlertThresholds,
-  DealThresholds,
+  CabinQualityLabel,
   DestinationGateway,
+  FareConfidence,
+  FareIntelligenceConfig,
   FareObservation,
+  FareOpportunity,
+  FareOpportunityType,
+  FareTrend,
+  RobustStats,
+  TravelObjective,
   GroundTransferProfile,
   HomeSettings,
   OriginAccessProfile,
@@ -54,7 +61,7 @@ const del = <T>(url: string): Promise<T> => request<T>(url, { method: 'DELETE' }
 
 export interface Settings {
   home: HomeSettings;
-  dealThresholds: DealThresholds;
+  fareIntelligence: FareIntelligenceConfig;
   alertThresholds: AlertThresholds;
 }
 
@@ -65,7 +72,30 @@ export interface Reference {
   accessModes: string[];
   groundModes: string[];
   dealLevels: DealLevel[];
+  dealLevelLabels: Record<DealLevel, string>;
+  confidences: FareConfidence[];
+  cabinQualities: CabinQualityLabel[];
+  opportunityTypes: FareOpportunityType[];
+  objective: TravelObjective;
   scoreCategories: Array<{ key: keyof ScoreWeights; label: string }>;
+}
+
+export type StoredOpportunity = FareOpportunity & { searchRunId: string; classification: DealLevel; dealScore: number | null };
+
+export interface DealsResponse {
+  run: SearchRunSummary | null;
+  journeys: ScoredJourney[];
+  summary: { byClassification: Record<DealLevel, number>; byConfidence: Record<string, number>; byCabinQuality: Record<string, number>; total: number };
+  opportunities: StoredOpportunity[];
+  observationCount: number;
+}
+
+export interface FingerprintHistory {
+  fingerprint: string;
+  observations: FareObservation[];
+  count: number;
+  stats: RobustStats | null;
+  trend: FareTrend | null;
 }
 
 export interface SearchRunSummary {
@@ -101,6 +131,7 @@ export interface RadarResponse {
   alertCounts: Record<string, number>;
   top: ScoredJourney[];
   journeys: ScoredJourney[];
+  opportunities: StoredOpportunity[];
 }
 
 export interface ProviderStatus {
@@ -219,6 +250,23 @@ export const api = {
     return get<{ observations: FareObservation[]; count: number }>(`/api/history?${params.toString()}`);
   },
   historySummary: () => get<HistorySummaryRow[]>('/api/history/summary'),
+  fingerprintHistory: (fingerprint: string, currentFareEur?: number) => get<FingerprintHistory>(`/api/history/fingerprint/${fingerprint}${currentFareEur !== undefined ? `?currentFareEur=${currentFareEur}` : ''}`),
+  deals: (q: { runId?: string; profileId?: string; cabin?: string }) => {
+    const params = new URLSearchParams();
+    if (q.runId) params.set('runId', q.runId);
+    if (q.profileId) params.set('profileId', q.profileId);
+    if (q.cabin) params.set('cabin', q.cabin);
+    return get<DealsResponse>(`/api/deals?${params.toString()}`);
+  },
+  opportunities: (q: { runId?: string; days?: number; type?: string; cabin?: string }) => {
+    const params = new URLSearchParams();
+    if (q.runId) params.set('runId', q.runId);
+    if (q.days) params.set('days', String(q.days));
+    if (q.type) params.set('type', q.type);
+    if (q.cabin) params.set('cabin', q.cabin);
+    return get<StoredOpportunity[]>(`/api/opportunities?${params.toString()}`);
+  },
+  fareIntelligenceDefaults: () => get<FareIntelligenceConfig>('/api/settings/fare-intelligence/defaults'),
   providerStatus: () => get<ProviderStatus>('/api/providers/status'),
   scheduler: () => get<SchedulerStatus>('/api/scheduler'),
   verifications: (q: { runId?: string; ids?: string[] }) => {

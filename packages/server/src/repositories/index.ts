@@ -2,10 +2,12 @@ import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type {
   Airport,
   AlertThresholds,
-  DealThresholds,
+  DealAssessment,
   DestinationGateway,
   EnrichedJourney,
+  FareIntelligenceConfig,
   FareObservation,
+  FareOpportunity,
   GroundTransferProfile,
   HomeSettings,
   NormalizedItinerary,
@@ -14,13 +16,14 @@ import type {
   ScoredJourney,
   TripProfile,
 } from '@kfr/core';
-import type { ProviderFailure, ProviderUsageEvent } from '@kfr/core';
+import { cabinQualityLabel, daysBetween, mergeFareIntelligenceConfig, routeFamilyFor, KRABI_REGION_OBJECTIVE, type ProviderFailure, type ProviderUsageEvent } from '@kfr/core';
 import type { Database } from '../db/client.js';
 import {
   airports,
   appSettings,
   destinationGateways,
   fareObservations,
+  fareOpportunities,
   flightSegments,
   groundTransferProfiles,
   itineraries,
@@ -39,8 +42,16 @@ const uuid = (): string => crypto.randomUUID();
 
 export interface Settings {
   home: HomeSettings;
-  dealThresholds: DealThresholds;
+  fareIntelligence: FareIntelligenceConfig;
   alertThresholds: AlertThresholds;
+}
+
+export interface OpportunityFilter {
+  runId?: string;
+  sinceDays?: number;
+  type?: string;
+  cabin?: string;
+  limit?: number;
 }
 
 export interface SearchRunSummary {
@@ -81,12 +92,12 @@ export class Repositories {
         currency: 'EUR',
         fxRatesToEur: row.fxRatesToEur,
       },
-      dealThresholds: row.dealThresholds,
+      fareIntelligence: mergeFareIntelligenceConfig(row.fareIntelligence),
       alertThresholds: row.alertThresholds,
     };
   }
 
-  async updateSettings(input: Partial<Settings>): Promise<Settings> {
+  async updateSettings(input: Partial<Omit<Settings, 'fareIntelligence'>> & { fareIntelligence?: Partial<FareIntelligenceConfig> }): Promise<Settings> {
     const patch: Partial<typeof appSettings.$inferInsert> = { updatedAt: new Date() };
     if (input.home) {
       patch.homeName = input.home.name;
@@ -97,7 +108,7 @@ export class Repositories {
       patch.airportExitMinutes = input.home.airportExitMinutes;
       patch.fxRatesToEur = input.home.fxRatesToEur;
     }
-    if (input.dealThresholds) patch.dealThresholds = input.dealThresholds;
+    if (input.fareIntelligence) patch.fareIntelligence = mergeFareIntelligenceConfig(input.fareIntelligence);
     if (input.alertThresholds) patch.alertThresholds = input.alertThresholds;
     await this.db.update(appSettings).set(patch).where(eq(appSettings.id, 1));
     return this.getSettings();
@@ -267,10 +278,20 @@ export class Repositories {
       const scoreRows: Array<typeof scoreResults.$inferInsert> = [];
       const refRows: Array<typeof providerOfferReferences.$inferInsert> = [];
       const obsRows: Array<typeof fareObservations.$inferInsert> = [];
+      const obsKeys = new Set<string>();
+      const pushObservation = (row: typeof fareObservations.$inferInsert): void => {
+        // Never record the same offer twice within one run.
+        const key = `${row.provider}|${row.providerOfferId ?? ''}|${row.itineraryFingerprint}|${row.fareEur}`;
+        if (obsKeys.has(key)) return;
+        obsKeys.add(key);
+        obsRows.push(row);
+      };
+      const itineraryIds = new Map<string, string>();
 
       for (const j of result.journeys) {
         const it = j.itinerary;
         const itineraryId = uuid();
+        itineraryIds.set(it.id, itineraryId);
         const k = knownMap.get(it.fingerprint);
         const firstSeen = k?.firstSeen ?? now;
         // Persist the itinerary with a stable database id; keep the provider id in the normalized payload.
@@ -321,9 +342,12 @@ export class Repositories {
         });
         refRows.push({ id: uuid(), itineraryId, provider: it.provider, providerOfferId: it.providerOfferId, fare: it.fare, currency: it.currency, fareEur: it.fareEur, expiresAt: it.providerExpiresAt ? new Date(it.providerExpiresAt) : null, raw: it.rawProviderReference ?? null });
         for (const alt of it.alternatives) refRows.push({ id: uuid(), itineraryId, provider: alt.provider, providerOfferId: alt.providerOfferId, fare: alt.fare, currency: alt.currency, fareEur: alt.fareEur, expiresAt: alt.providerExpiresAt ? new Date(alt.providerExpiresAt) : null, raw: null });
-        obsRows.push(observationRow(it, now, runId));
-        for (const alt of it.alternatives) obsRows.push({ ...observationRow(it, now, runId), id: uuid(), provider: alt.provider, fare: alt.fare, currency: alt.currency, fareEur: alt.fareEur });
+        pushObservation(observationRow(it, now, runId));
+        for (const alt of it.alternatives) pushObservation({ ...observationRow(it, now, runId), id: uuid(), provider: alt.provider, providerOfferId: alt.providerOfferId, fare: alt.fare, currency: alt.currency, fareEur: alt.fareEur, verified: false, fareVerifiedEur: null });
       }
+      const oppRows: Array<typeof fareOpportunities.$inferInsert> = result.opportunities
+        .filter((o) => itineraryIds.has(o.itineraryId))
+        .map((o) => opportunityRow(o, runId, itineraryIds.get(o.itineraryId)!, result.journeys.find((j) => j.itinerary.id === o.itineraryId)!));
 
       // Scores were computed with the profile snapshot's weights; store them with the score row.
       const weights = result.journeys[0] ? (result as unknown as { weights?: unknown }).weights : undefined;
@@ -333,7 +357,8 @@ export class Repositories {
       for (const chunk of chunks(segmentRows, 500)) await tx.insert(flightSegments).values(chunk);
       await tx.insert(scoreResults).values(scoreRows);
       for (const chunk of chunks(refRows, 500)) await tx.insert(providerOfferReferences).values(chunk);
-      for (const chunk of chunks(obsRows, 500)) await tx.insert(fareObservations).values(chunk);
+      for (const chunk of chunks(obsRows, 500)) await tx.insert(fareObservations).values(chunk).onConflictDoNothing();
+      for (const chunk of chunks(oppRows, 500)) await tx.insert(fareOpportunities).values(chunk);
 
       for (const j of result.journeys) {
         const it = j.itinerary;
@@ -378,8 +403,13 @@ export class Repositories {
     return (await this.db.select().from(knownItineraries).where(eq(knownItineraries.fingerprint, fingerprint)))[0] ?? null;
   }
 
-  async updateRunScores(runId: string, journeys: ScoredJourney[], now: Date): Promise<void> {
+  async updateRunScores(runId: string, journeys: ScoredJourney[], now: Date, opportunities?: FareOpportunity[]): Promise<void> {
     await this.db.transaction(async (tx) => {
+      if (opportunities) {
+        await tx.delete(fareOpportunities).where(eq(fareOpportunities.searchRunId, runId));
+        const rows = opportunities.map((o) => opportunityRow(o, runId, o.itineraryId, journeys.find((j) => j.itinerary.id === o.itineraryId)!)).filter((r) => journeys.some((j) => j.itinerary.id === r.itineraryId));
+        for (const chunk of chunks(rows, 500)) await tx.insert(fareOpportunities).values(chunk);
+      }
       for (const j of journeys) {
         const { itinerary: it, ...enriched } = j;
         await tx
@@ -396,14 +426,24 @@ export class Repositories {
 
   // ------------------------------------------------------------ observations
   async addObservation(o: FareObservation): Promise<void> {
-    await this.db.insert(fareObservations).values({ id: uuid(), ...o, observedAt: new Date(o.observedAt), searchRunId: o.searchRunId ?? null });
+    await this.db
+      .insert(fareObservations)
+      .values({ ...o, id: uuid(), observedAt: new Date(o.observedAt), searchRunId: o.searchRunId ?? null, verified: o.verified ?? false })
+      .onConflictDoNothing();
   }
 
-  async queryObservations(f: { origin?: string; gateway?: string; cabin?: string; sinceDays?: number; limit?: number }): Promise<FareObservation[]> {
+  /** Observation of an itinerary as it stands now (used by re-pricing and verification). */
+  observationFor(it: NormalizedItinerary, observedAt: string, runId: string | null): FareObservation {
+    const row = observationRow(it, new Date(observedAt), runId);
+    return { ...row, observedAt, cabin: row.cabin as FareObservation['cabin'], cabinQuality: row.cabinQuality as FareObservation['cabinQuality'] };
+  }
+
+  async queryObservations(f: { origin?: string; gateway?: string; cabin?: string; fingerprint?: string; sinceDays?: number; limit?: number }): Promise<FareObservation[]> {
     const conds = [];
     if (f.origin) conds.push(eq(fareObservations.originAirport, f.origin));
     if (f.gateway) conds.push(eq(fareObservations.arrivalGateway, f.gateway));
     if (f.cabin) conds.push(eq(fareObservations.cabin, f.cabin));
+    if (f.fingerprint) conds.push(eq(fareObservations.itineraryFingerprint, f.fingerprint));
     if (f.sinceDays) conds.push(gte(fareObservations.observedAt, new Date(Date.now() - f.sinceDays * 86400000)));
     const rows = await this.db
       .select()
@@ -411,7 +451,45 @@ export class Repositories {
       .where(conds.length ? and(...conds) : undefined)
       .orderBy(desc(fareObservations.observedAt))
       .limit(f.limit ?? 5000);
-    return rows.map((r) => ({ ...r, cabin: r.cabin as FareObservation['cabin'], observedAt: r.observedAt.toISOString(), searchRunId: r.searchRunId }));
+    return rows.map(toObservation);
+  }
+
+  async countObservations(): Promise<number> {
+    const r = await this.db.select({ n: sql<number>`count(*)` }).from(fareObservations);
+    return Number(r[0]?.n ?? 0);
+  }
+
+  // ----------------------------------------------------------- opportunities
+  async listOpportunities(f: OpportunityFilter): Promise<Array<FareOpportunity & { searchRunId: string; classification: string; dealScore: number | null }>> {
+    const conds = [];
+    if (f.runId) conds.push(eq(fareOpportunities.searchRunId, f.runId));
+    if (f.type) conds.push(eq(fareOpportunities.type, f.type));
+    if (f.cabin) conds.push(eq(fareOpportunities.cabin, f.cabin));
+    if (f.sinceDays) conds.push(gte(fareOpportunities.detectedAt, new Date(Date.now() - f.sinceDays * 86400000)));
+    const rows = await this.db
+      .select()
+      .from(fareOpportunities)
+      .where(conds.length ? and(...conds) : undefined)
+      .orderBy(desc(fareOpportunities.detectedAt), desc(fareOpportunities.severity))
+      .limit(f.limit ?? 200);
+    return rows.map((r) => ({
+      id: r.id,
+      type: r.type as FareOpportunity['type'],
+      severity: r.severity as FareOpportunity['severity'],
+      confidence: r.confidence as FareOpportunity['confidence'],
+      reason: r.reason,
+      metrics: r.metrics,
+      itineraryId: r.itineraryId,
+      fingerprint: r.fingerprint,
+      originAirport: r.originAirport,
+      arrivalGateway: r.arrivalGateway,
+      cabin: r.cabin as FareOpportunity['cabin'],
+      fareEur: r.fareEur,
+      detectedAt: r.detectedAt.toISOString(),
+      searchRunId: r.searchRunId,
+      classification: r.classification,
+      dealScore: r.dealScore,
+    }));
   }
 
   async observationSummary(): Promise<Array<{ originAirport: string; arrivalGateway: string; cabin: string; count: number; minFareEur: number; medianFareEur: number; lastObservedAt: string }>> {
@@ -632,10 +710,11 @@ function toScoredJourney(it: typeof itineraries.$inferSelect, s: typeof scoreRes
     ...it.enriched,
     categoryScores: s.categoryScores,
     overallScore: s.overallScore,
+    journeyValueScore: s.overallScore,
     reasons: s.reasons,
     labels: s.labels,
-    baseline: s.baseline,
-    deal: s.deal,
+    baseline: { ...s.baseline, airfareSavingVsBaseline: s.baseline.airfareSavingVsBaseline ?? null, breakEvenFareEur: s.baseline.breakEvenFareEur ?? null, breakEvenFareWithTimeEur: s.baseline.breakEvenFareWithTimeEur ?? null },
+    deal: upgradeLegacyDeal(s.deal, it.normalized),
     paretoDominated: s.paretoDominated,
     dominatedBy: s.dominatedBy,
     convenienceScore: s.convenienceScore,
@@ -668,14 +747,55 @@ function segmentRow(itineraryId: string, direction: 'OUTBOUND' | 'RETURN', seq: 
   };
 }
 
-function observationRow(it: NormalizedItinerary, now: Date, runId: string): typeof fareObservations.$inferInsert {
+const LEGACY_LEVELS: Record<string, DealAssessment['level']> = { INSANE: 'EXCEPTIONAL', EXCEPTIONAL: 'EXCEPTIONAL', EXCELLENT: 'EXCELLENT', GOOD: 'GOOD', NORMAL: 'NORMAL' };
+
+/** Rows scored before the fare-intelligence engine only carry the legacy deal shape; lift them to the current one. */
+function upgradeLegacyDeal(deal: DealAssessment, it: NormalizedItinerary): DealAssessment {
+  if (deal && typeof deal === 'object' && 'dealScore' in deal) return deal;
+  const legacy = deal as unknown as { level?: string; referenceFare?: number | null; referenceLow?: number | null; referenceHigh?: number | null; percentBelowReference?: number | null; source?: DealAssessment['source']; comparableObservations?: number; lowestObservedComparable?: number | null };
+  const summary = it.cabinSummary;
+  const label = cabinQualityLabel(summary);
+  return {
+    level: LEGACY_LEVELS[legacy.level ?? ''] ?? 'UNKNOWN',
+    dealScore: null,
+    confidence: 'NONE',
+    confidenceReasons: ['Scored before the fare-intelligence engine existed; re-run the search for a full assessment'],
+    source: legacy.source ?? 'NONE',
+    referenceFare: legacy.referenceFare ?? null,
+    referenceLow: legacy.referenceLow ?? null,
+    referenceHigh: legacy.referenceHigh ?? null,
+    percentOfMedian: legacy.percentBelowReference == null ? null : Math.round((100 - legacy.percentBelowReference) * 10) / 10,
+    percentBelowReference: legacy.percentBelowReference ?? null,
+    savingVsMedianEur: legacy.referenceFare == null ? null : Math.round((legacy.referenceFare - it.fareEur) * 100) / 100,
+    savingVsP25Eur: null,
+    aboveLowestEur: null,
+    comparableObservations: legacy.comparableObservations ?? 0,
+    lowestObservedComparable: legacy.lowestObservedComparable ?? null,
+    cohort: null,
+    stats: null,
+    market: { scope: 'NONE', comparableCount: 0, cheapestEur: null, medianEur: null, rank: null, differenceToBestEur: null, percentAboveBest: null },
+    trend: null,
+    cabinQuality: { label, premiumCabinPercent: summary.premiumCabinPercent, longHaulPremiumPercent: summary.longHaulPremiumPercent, penalty: 0 },
+    costs: null,
+    explanations: ['Legacy assessment: re-run the search to get the historical fare intelligence verdict.'],
+    opportunities: [],
+  };
+}
+
+function toObservation(r: typeof fareObservations.$inferSelect): FareObservation {
+  return { ...r, cabin: r.cabin as FareObservation['cabin'], cabinQuality: r.cabinQuality as FareObservation['cabinQuality'], observedAt: r.observedAt.toISOString(), searchRunId: r.searchRunId };
+}
+
+function observationRow(it: NormalizedItinerary, now: Date, runId: string | null): typeof fareObservations.$inferInsert {
+  const outboundDate = it.outbound.departureLocal.slice(0, 10);
+  const inboundDate = it.inbound.departureLocal.slice(0, 10);
   return {
     id: uuid(),
     observedAt: now,
     originAirport: it.originAirport,
     arrivalGateway: it.arrivalGateway,
-    outboundDate: it.outbound.departureLocal.slice(0, 10),
-    inboundDate: it.inbound.departureLocal.slice(0, 10),
+    outboundDate,
+    inboundDate,
     airline: it.primaryAirline,
     cabin: it.cabinSummary.requestedCabin,
     fare: it.fare,
@@ -684,6 +804,46 @@ function observationRow(it: NormalizedItinerary, now: Date, runId: string): type
     provider: it.provider,
     itineraryFingerprint: it.fingerprint,
     searchRunId: runId,
+    tripDays: daysBetween(outboundDate, inboundDate),
+    daysToDeparture: daysBetween(now.toISOString().slice(0, 10), outboundDate),
+    stopsOutbound: it.outbound.transfers,
+    stopsInbound: it.inbound.transfers,
+    connectionAirports: [...it.outbound.connections, ...it.inbound.connections].map((c) => c.airport),
+    outboundDepartureLocal: it.outbound.departureLocal,
+    outboundArrivalLocal: it.outbound.arrivalLocal,
+    inboundDepartureLocal: it.inbound.departureLocal,
+    inboundArrivalLocal: it.inbound.arrivalLocal,
+    totalDurationMinutes: it.outbound.totalMinutes + it.inbound.totalMinutes,
+    taxesEur: null,
+    providerOfferId: it.providerOfferId,
+    premiumCabinPercent: it.cabinSummary.premiumCabinPercent,
+    longHaulPremiumPercent: it.cabinSummary.longHaulPremiumPercent,
+    cabinQuality: cabinQualityLabel(it.cabinSummary),
+    routeFamily: routeFamilyFor(it.arrivalGateway, KRABI_REGION_OBJECTIVE),
+    verified: Boolean(it.verifiedFare),
+    fareVerifiedEur: it.verifiedFare?.amountEur ?? null,
+  };
+}
+
+function opportunityRow(o: FareOpportunity, runId: string, itineraryId: string, j: ScoredJourney): typeof fareOpportunities.$inferInsert {
+  return {
+    // Core ids are deterministic per run content; the row id must be unique across runs.
+    id: uuid(),
+    searchRunId: runId,
+    itineraryId,
+    fingerprint: o.fingerprint,
+    type: o.type,
+    severity: o.severity,
+    confidence: o.confidence,
+    reason: o.reason,
+    metrics: o.metrics,
+    originAirport: o.originAirport,
+    arrivalGateway: o.arrivalGateway,
+    cabin: o.cabin,
+    fareEur: o.fareEur,
+    dealScore: j.deal.dealScore,
+    classification: j.deal.level,
+    detectedAt: new Date(o.detectedAt),
   };
 }
 

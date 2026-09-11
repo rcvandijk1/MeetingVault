@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { bandScoreAt, flightTimingBreakdown, normalizeBandScore, sleepOpportunityScore, timeOfDayScore } from '../src/pipeline/timing.js';
 import { computeOverall, explainScore, rankJourneys } from '../src/pipeline/rank.js';
 import { dominates, paretoAnalysis } from '../src/pipeline/pareto.js';
-import { assessDeal, dealLevelFor } from '../src/pipeline/deal.js';
+import { assessDeal } from '../src/pipeline/deal.js';
+import { classifyPercentOfMedian } from '../src/intelligence/assess.js';
 import { legTransferScore, selfTransferRiskScore } from '../src/pipeline/scoring.js';
-import { DEFAULT_DEAL_THRESHOLDS, DEFAULT_SCORING_PARAMS, DEFAULT_SELF_TRANSFER_POLICY, DEFAULT_TIME_PREFERENCES, DEFAULT_WEIGHTS } from '../src/defaults.js';
+import { DEFAULT_FARE_INTELLIGENCE, DEFAULT_SCORING_PARAMS, DEFAULT_SELF_TRANSFER_POLICY, DEFAULT_TIME_PREFERENCES, DEFAULT_WEIGHTS } from '../src/defaults.js';
 import type { FareObservation, ScoreWeights, ScoredJourney } from '../src/types.js';
 import { runPipeline } from '../src/pipeline/index.js';
 import { amsDohKbv, itinerary, testContext } from './helpers.js';
@@ -124,34 +125,43 @@ describe('Pareto dominance', () => {
 });
 
 describe('deal intelligence', () => {
-  it('maps percentage below reference to levels', () => {
-    expect(dealLevelFor(null, DEFAULT_DEAL_THRESHOLDS)).toBe('NORMAL');
-    expect(dealLevelFor(5, DEFAULT_DEAL_THRESHOLDS)).toBe('NORMAL');
-    expect(dealLevelFor(10, DEFAULT_DEAL_THRESHOLDS)).toBe('GOOD');
-    expect(dealLevelFor(20, DEFAULT_DEAL_THRESHOLDS)).toBe('EXCELLENT');
-    expect(dealLevelFor(30, DEFAULT_DEAL_THRESHOLDS)).toBe('EXCEPTIONAL');
-    expect(dealLevelFor(45, DEFAULT_DEAL_THRESHOLDS)).toBe('INSANE');
+  const t = DEFAULT_FARE_INTELLIGENCE.thresholds;
+  it('maps fare as a percent of the cohort median to the six classification bands', () => {
+    expect(classifyPercentOfMedian(null, t)).toBe('UNKNOWN');
+    expect(classifyPercentOfMedian(55, t)).toBe('EXCEPTIONAL');
+    expect(classifyPercentOfMedian(70, t)).toBe('EXCELLENT');
+    expect(classifyPercentOfMedian(80, t)).toBe('GOOD');
+    expect(classifyPercentOfMedian(100, t)).toBe('NORMAL');
+    expect(classifyPercentOfMedian(120, t)).toBe('EXPENSIVE');
+    expect(classifyPercentOfMedian(150, t)).toBe('VERY_EXPENSIVE');
   });
 
   it('uses the application history as reference when enough observations exist', () => {
     const it = amsDohKbv({ fare: 1690 });
-    const history: FareObservation[] = [2400, 2500, 2600, 2700, 2800].map((fare, i) => ({ observedAt: `2026-09-0${i + 1}T00:00:00Z`, originAirport: 'AMS', arrivalGateway: 'KBV', outboundDate: '2027-01-20', inboundDate: '2027-02-08', airline: 'QR', cabin: 'BUSINESS', fare, currency: 'EUR', fareEur: fare, provider: 'mock', itineraryFingerprint: 'x' }));
-    const deal = assessDeal(it, [it], history, DEFAULT_DEAL_THRESHOLDS);
+    const history: FareObservation[] = [2400, 2500, 2600, 2700, 2800].map((fare, i) => ({ observedAt: `2026-09-0${i + 1}T00:00:00Z`, originAirport: 'AMS', arrivalGateway: 'KBV', outboundDate: '2027-01-20', inboundDate: '2027-02-08', airline: 'QR', cabin: 'BUSINESS', fare, currency: 'EUR', fareEur: fare, provider: 'mock', itineraryFingerprint: 'x', cabinQuality: 'FULL' }));
+    const deal = assessDeal(it, [it], testContext({ history }));
     expect(deal.source).toBe('HISTORY');
     expect(deal.referenceFare).toBe(2600);
     expect(deal.referenceLow).toBe(2500);
     expect(deal.referenceHigh).toBe(2700);
     expect(deal.percentBelowReference).toBe(35);
+    expect(deal.percentOfMedian).toBe(65);
+    // 65% of the median would be EXCELLENT; 30% below the lowest comparable fare ever seen triggers the below-the-floor rule.
     expect(deal.level).toBe('EXCEPTIONAL');
+    expect(deal.confidence).toBe('LOW');
+    expect(deal.cohort?.level).toBe(1);
   });
 
-  it('falls back to the search distribution without history', () => {
+  it('falls back to the search distribution without history, with low confidence', () => {
     const cheap = amsDohKbv({ id: 'cheap', fare: 1200 });
     const set = [cheap, amsDohKbv({ id: 'b', fare: 2000, depTime: '15:55' }), amsDohKbv({ id: 'c', fare: 2100, depTime: '10:00' }), amsDohKbv({ id: 'd', fare: 2200, depTime: '11:00' })];
-    const deal = assessDeal(cheap, set, [], DEFAULT_DEAL_THRESHOLDS);
+    const deal = assessDeal(cheap, set, testContext({ history: [] }));
     expect(deal.source).toBe('SEARCH_DISTRIBUTION');
     expect(deal.percentBelowReference).toBeGreaterThan(40);
-    expect(deal.level).toBe('INSANE');
+    expect(deal.level).toBe('EXCEPTIONAL');
+    expect(deal.confidence).toBe('LOW');
+    expect(deal.cohort?.level).toBe(0);
+    expect(deal.market.rank).toBe(1);
   });
 });
 

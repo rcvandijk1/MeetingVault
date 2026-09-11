@@ -19,8 +19,36 @@ export type Direction = 'OUTBOUND' | 'RETURN';
 
 export type ConnectionType = 'PROTECTED' | 'SELF_TRANSFER';
 
-export type DealLevel = 'NORMAL' | 'GOOD' | 'EXCELLENT' | 'EXCEPTIONAL' | 'INSANE';
-export const DEAL_LEVELS: DealLevel[] = ['NORMAL', 'GOOD', 'EXCELLENT', 'EXCEPTIONAL', 'INSANE'];
+/**
+ * Fare classification relative to the normalized historical median of the
+ * comparable cohort (see `FareClassificationThresholds`). `UNKNOWN` means no
+ * reference at all was available (cold start, nothing comparable in the search).
+ */
+export type DealLevel = 'EXCEPTIONAL' | 'EXCELLENT' | 'GOOD' | 'NORMAL' | 'EXPENSIVE' | 'VERY_EXPENSIVE' | 'UNKNOWN';
+export const DEAL_LEVELS: DealLevel[] = ['EXCEPTIONAL', 'EXCELLENT', 'GOOD', 'NORMAL', 'EXPENSIVE', 'VERY_EXPENSIVE', 'UNKNOWN'];
+export const DEAL_LEVEL_LABELS: Record<DealLevel, string> = {
+  EXCEPTIONAL: 'Exceptional',
+  EXCELLENT: 'Excellent',
+  GOOD: 'Good',
+  NORMAL: 'Normal',
+  EXPENSIVE: 'Expensive',
+  VERY_EXPENSIVE: 'Very expensive',
+  UNKNOWN: 'Unknown',
+};
+
+export type FareConfidence = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE';
+export const FARE_CONFIDENCES: FareConfidence[] = ['HIGH', 'MEDIUM', 'LOW', 'NONE'];
+
+/** Duration-weighted cabin quality of an itinerary relative to its requested cabin. */
+export type CabinQualityLabel = 'FULL' | 'MOSTLY' | 'MIXED';
+export const CABIN_QUALITY_LABELS: CabinQualityLabel[] = ['FULL', 'MOSTLY', 'MIXED'];
+
+/** 0 = no historical cohort (current search distribution only); 1 = most specific … 4 = widest. */
+export type CohortLevel = 0 | 1 | 2 | 3 | 4;
+
+export type FareOpportunityType = 'NEW_LOW' | 'SIGNIFICANT_DROP' | 'HISTORICAL_OUTLIER' | 'ALTERNATIVE_AIRPORT_OPPORTUNITY' | 'PREMIUM_CABIN_ANOMALY' | 'ROUTING_OPPORTUNITY';
+export const FARE_OPPORTUNITY_TYPES: FareOpportunityType[] = ['NEW_LOW', 'SIGNIFICANT_DROP', 'HISTORICAL_OUTLIER', 'ALTERNATIVE_AIRPORT_OPPORTUNITY', 'PREMIUM_CABIN_ANOMALY', 'ROUTING_OPPORTUNITY'];
+export type OpportunitySeverity = 'INFO' | 'NOTABLE' | 'STRONG';
 
 export type GroundMode = 'PRIVATE_DRIVER' | 'TAXI' | 'SHUTTLE' | 'BUS' | 'FERRY' | 'OTHER';
 export const GROUND_MODES: GroundMode[] = ['PRIVATE_DRIVER', 'TAXI', 'SHUTTLE', 'BUS', 'FERRY', 'OTHER'];
@@ -222,12 +250,86 @@ export interface SelfTransferPolicy {
   baggageRecheckExtraMinutes: number;
 }
 
-export interface DealThresholds {
-  /** Percentage below reference fare required for each level (ascending). */
-  good: number;
-  excellent: number;
+/**
+ * Upper bounds, as a percentage of the normalized cohort median, of each
+ * classification band: fare ≤ exceptional% → EXCEPTIONAL, ≤ excellent% →
+ * EXCELLENT, ≤ good% → GOOD, ≤ normal% → NORMAL, ≤ expensive% → EXPENSIVE,
+ * above → VERY_EXPENSIVE.
+ */
+export interface FareClassificationThresholds {
   exceptional: number;
-  insane: number;
+  excellent: number;
+  good: number;
+  normal: number;
+  expensive: number;
+  /**
+   * "Below the floor" rule: a fare at least this many percent below the lowest
+   * comparable fare ever observed is EXCEPTIONAL regardless of the median band
+   * (it lies outside the whole observed distribution).
+   */
+  exceptionalBelowLowestPercent: number;
+}
+
+/** Tunable parameters of the historical fare intelligence engine. Stored in app settings. */
+export interface FareIntelligenceConfig {
+  thresholds: FareClassificationThresholds;
+  /** Minimum observations for a cohort (at any level) to serve as reference. */
+  minCohortSamples: number;
+  confidence: {
+    highMinSamples: number;
+    mediumMinSamples: number;
+    highMinDistinctDays: number;
+    mediumMinDistinctDays: number;
+  };
+  /** Candidate observation windows in days, ascending; 0 = all history. */
+  windowsDays: number[];
+  /** Window tried first; wider windows are used only when it lacks samples. */
+  preferredWindowDays: number;
+  /** Days for the "recent median" statistic. */
+  recentDays: number;
+  /** Days for the rolling median statistic. */
+  rollingDays: number;
+  seasonalityEnabled: boolean;
+  /** Upper edges (days before departure) of the advance-purchase bands, ascending. */
+  advancePurchaseBandEdges: number[];
+  /** Observations count as "same trip length" when within ± this many days. */
+  tripDurationToleranceDays: number;
+  /**
+   * Data-quality outliers are excluded from the reference: values outside
+   * lowFactor×median … highFactor×median, and values beyond the Tukey fence
+   * p25 − k×IQR … p75 + k×IQR (fence width at least 15% of the median so tight
+   * distributions are not over-trimmed).
+   */
+  outlier: { lowFactor: number; highFactor: number; iqrMultiplier: number };
+  drop: {
+    /** Percent decrease versus the previous observation that counts as a significant drop. */
+    significantDropPercent: number;
+    /** Prior observations of the same itinerary required before "new low" is reported. */
+    newLowMinObservations: number;
+  };
+  opportunities: {
+    altAirportMinSavingEur: number;
+    altAirportMinSavingPerHour: number;
+    routingMinSavingEur: number;
+    /** Business fare at or below this multiple of the economy cohort median is a premium-cabin anomaly. */
+    premiumVsEconomyMaxRatio: number;
+  };
+  /**
+   * Optional monetary value of time. Disabled by default: financial cost and
+   * journey burden are reported separately, never silently merged.
+   */
+  timeValue: { enabled: boolean; eurPerActiveHour: number; eurPerHotelNight: number; eurPerTransfer: number };
+  /** Deal-score points removed for non-full cabin quality. */
+  cabinQualityPenalty: { mostly: number; mixed: number };
+}
+
+/** A route family: the set of gateways that serve the same travel objective. */
+export interface TravelObjective {
+  id: string;
+  name: string;
+  gateways: Array<{ code: string; onward: 'NONE' | 'GROUND' | 'FLIGHT'; note: string }>;
+  /** Origin region id → ISO country codes. Used by cohort level 3. */
+  originRegions: Record<string, string[]>;
 }
 
 export interface AlertThresholds {
@@ -543,28 +645,190 @@ export interface BaselineComparison {
   baselineItineraryId: string | null;
   baselineOrigin: string | null;
   baselineStrategy: 'BASELINE_ORIGIN' | 'LOW_FRICTION' | 'NONE';
+  /** True-journey-cost saving versus the baseline (positive = cheaper overall). */
   savingVsBaseline: number | null;
+  /** Airfare-only saving versus the baseline; the gap to `savingVsBaseline` is the positioning/hotel/transfer cost. */
+  airfareSavingVsBaseline: number | null;
   extraMinutesVsBaseline: number | null;
   savingPerExtraHour: number | null;
   dominant: boolean;
   isBaseline: boolean;
+  /**
+   * Airfare (EUR) at which this journey's true cost equals the baseline's:
+   * the alternative airport is only worth it while its fare stays below this.
+   */
+  breakEvenFareEur: number | null;
+  /** Same, after charging the extra travel burden at the configured value of time (null when disabled). */
+  breakEvenFareWithTimeEur: number | null;
 }
 
+export interface RobustStats {
+  count: number;
+  median: number;
+  mean: number;
+  p10: number;
+  p25: number;
+  p75: number;
+  p90: number;
+  stdev: number;
+  min: number;
+  max: number;
+}
+
+export interface CohortSummary {
+  level: CohortLevel;
+  /** Human-readable definition of the comparison set. */
+  description: string;
+  /** Observation window in days (0 = all history). */
+  windowDays: number;
+  sampleCount: number;
+  /** Distinct calendar days on which the cohort was observed (time coverage). */
+  distinctDays: number;
+  /** Earliest / latest observation time in the cohort. */
+  from: string | null;
+  to: string | null;
+  season: string | null;
+  advancePurchaseBand: string | null;
+  tripDaysBand: string | null;
+  /** Dimensions relaxed relative to level 1. */
+  relaxations: string[];
+  /** Observations dropped for data-quality reasons. */
+  excludedInvalid: number;
+  excludedOutliers: number;
+}
+
+export interface FareStatistics extends RobustStats {
+  /** Median of the last `recentDays` days of the cohort (null when none). */
+  recentMedian: number | null;
+  /** Median of the last `rollingDays` days of the cohort. */
+  rollingMedian: number | null;
+  /** Median of observations in the same season across all years. */
+  seasonalMedian: number | null;
+  /** Fraction (0..1) of cohort fares strictly below the current fare. 0 = cheapest ever seen. */
+  percentileRank: number;
+}
+
+/** Position of the fare within the current search results (independent of history). */
+export interface MarketPosition {
+  scope: 'ROUTE' | 'GATEWAY' | 'CABIN' | 'NONE';
+  comparableCount: number;
+  cheapestEur: number | null;
+  medianEur: number | null;
+  /** 1 = cheapest comparable option in this search. */
+  rank: number | null;
+  differenceToBestEur: number | null;
+  percentAboveBest: number | null;
+}
+
+/** Price movement of one physical itinerary (fingerprint) across search runs. */
+export interface FareTrend {
+  fingerprint: string;
+  timesSeenBefore: number;
+  firstSeenAt: string | null;
+  firstSeenFareEur: number | null;
+  previousObservedAt: string | null;
+  previousFareEur: number | null;
+  lowestSeenEur: number | null;
+  highestSeenEur: number | null;
+  currentFareEur: number;
+  changeVsPreviousEur: number | null;
+  changeVsPreviousPercent: number | null;
+  median7dEur: number | null;
+  median30dEur: number | null;
+  changeVs30dMedianPercent: number | null;
+  /** Current fare is strictly below every earlier observation of this itinerary. */
+  isNewLow: boolean;
+}
+
+export interface CabinQualityAssessment {
+  label: CabinQualityLabel;
+  premiumCabinPercent: number;
+  longHaulPremiumPercent: number;
+  /** Deal-score points removed because of cabin quality. */
+  penalty: number;
+}
+
+export interface FareOpportunity {
+  id: string;
+  type: FareOpportunityType;
+  severity: OpportunitySeverity;
+  confidence: FareConfidence;
+  reason: string;
+  metrics: Record<string, number | string | null>;
+  itineraryId: string;
+  fingerprint: string;
+  originAirport: string;
+  arrivalGateway: string;
+  cabin: Cabin;
+  fareEur: number;
+  detectedAt: string;
+}
+
+export interface TripCostView {
+  /** Financial true journey cost (airfare + access + hotels + parking + ground). */
+  financialTrueCostEur: number;
+  /** Active travel burden, both directions, in minutes. Reported separately from money. */
+  journeyBurdenMinutes: number;
+  /** Monetary equivalent of the burden at the configured value of time (null when disabled). */
+  valueOfTimeEur: number | null;
+  /** Financial cost plus value of time (null when disabled). */
+  trueTripCostIncludingTimeEur: number | null;
+}
+
+/**
+ * Complete fare-intelligence verdict of one itinerary: historical
+ * classification, deal score, statistics, market position, price trend,
+ * cabin quality and human-readable explanations.
+ */
 export interface DealAssessment {
+  /** Classification relative to the normalized cohort median. */
   level: DealLevel;
-  /** Reference "normal" fare in EUR. */
+  /**
+   * 0..100. Combines percentile rank, distance below the median, distance
+   * below the cohort low, confidence and cabin quality. It is NOT a percentage
+   * discount: a 40% discount on two observations scores lower than on fifty.
+   */
+  dealScore: number | null;
+  confidence: FareConfidence;
+  /** Why confidence is not higher. */
+  confidenceReasons: string[];
+  source: 'HISTORY' | 'SEARCH_DISTRIBUTION' | 'NONE';
+  /** Reference "normal" fare in EUR: the cohort median (never a maximum or list price). */
   referenceFare: number | null;
+  /** p25 / p75 of the cohort. */
   referenceLow: number | null;
   referenceHigh: number | null;
+  /** fare / median × 100. */
+  percentOfMedian: number | null;
+  /** Positive = cheaper than the median (kept for backwards compatibility). */
   percentBelowReference: number | null;
-  source: 'HISTORY' | 'SEARCH_DISTRIBUTION' | 'NONE';
+  /** Explicit-baseline savings in EUR (positive = cheaper). */
+  savingVsMedianEur: number | null;
+  savingVsP25Eur: number | null;
+  /** How far above the lowest comparable fare ever observed (0 when this is the low). */
+  aboveLowestEur: number | null;
   comparableObservations: number;
   lowestObservedComparable: number | null;
+  cohort: CohortSummary | null;
+  stats: FareStatistics | null;
+  market: MarketPosition;
+  trend: FareTrend | null;
+  cabinQuality: CabinQualityAssessment;
+  costs: TripCostView | null;
+  explanations: string[];
+  opportunities: FareOpportunity[];
 }
 
 export interface ScoredJourney extends EnrichedJourney {
   categoryScores: Record<ScoreCategory, number>;
   overallScore: number;
+  /**
+   * Journey Value Score: the weighted combination of all nine categories
+   * (true cost, burden, timing, transfers, fare deal, cabin, origin, self-transfer
+   * risk, destination transfer). Identical to `overallScore`; named explicitly
+   * so it is never confused with the fare-only `deal.dealScore`.
+   */
+  journeyValueScore: number;
   reasons: ScoreReason[];
   labels: ResultLabel[];
   baseline: BaselineComparison;
@@ -605,6 +869,27 @@ export interface FareObservation {
   provider: string;
   itineraryFingerprint: string;
   searchRunId?: string | null;
+  // --- fare-intelligence enrichment (optional for observations recorded before it existed) ---
+  tripDays?: number | null;
+  daysToDeparture?: number | null;
+  stopsOutbound?: number | null;
+  stopsInbound?: number | null;
+  connectionAirports?: string[] | null;
+  outboundDepartureLocal?: string | null;
+  outboundArrivalLocal?: string | null;
+  inboundDepartureLocal?: string | null;
+  inboundArrivalLocal?: string | null;
+  totalDurationMinutes?: number | null;
+  /** Taxes and fees in EUR when the provider itemises them (null otherwise). */
+  taxesEur?: number | null;
+  providerOfferId?: string | null;
+  premiumCabinPercent?: number | null;
+  longHaulPremiumPercent?: number | null;
+  cabinQuality?: CabinQualityLabel | null;
+  routeFamily?: string | null;
+  /** True when the fare was confirmed by walking the booking flow / pricing API. */
+  verified?: boolean;
+  fareVerifiedEur?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -618,9 +903,10 @@ export interface PipelineContext {
   originProfiles: Record<string, OriginAccessProfile>;
   gateways: Record<string, DestinationGateway>;
   groundTransfers: GroundTransferProfile[];
-  /** Comparable historic observations for deal intelligence. */
+  /** Historic observations (all cabins of the profile, all routes of the objective) for fare intelligence. */
   history: FareObservation[];
-  dealThresholds: DealThresholds;
+  fareIntelligence: FareIntelligenceConfig;
+  objective: TravelObjective;
   /** Fixed reference date used for deterministic output (ISO). Defaults to now. */
   now?: string;
 }
@@ -638,4 +924,6 @@ export interface PipelineResult {
   journeys: ScoredJourney[];
   rejected: RejectedItinerary[];
   stats: PipelineStats;
+  /** All FareOpportunity events raised by this run (also attached to their journeys). */
+  opportunities: FareOpportunity[];
 }
