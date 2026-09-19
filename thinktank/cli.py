@@ -75,14 +75,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "status":
         sup = Supervisor(cfg, db)
-        week = sup.governor.week_summary()
+        spend = sup.governor.spend_status()
         problems = sup.ledger.list_problems()
         if args.json:
-            print(json.dumps({"week": week, "problems": problems}, indent=2, default=str))
+            print(json.dumps({"spend": spend, "problems": problems}, indent=2, default=str))
         else:
-            print(f"week: {week['week_tokens']:,} of {week['weekly_cap']:,} tokens ({week['week_pct']}%)")
+            pct = f" ({spend['month_pct']}%)" if spend["month_pct"] is not None else ""
+            print(f"spend, last 30 days: ${spend['month_usd']:.2f} of ${spend['max_usd_month']:.0f} max{pct}, {spend['month_tokens']:,} tokens")
+            print(f"spend, last 7 days:  ${spend['week_usd']:.2f}, {spend['week_tokens']:,} tokens")
             for p in problems:
-                print(f"{p['id']}  {p['status']:<12} {p['mode']:<9} {p['tokens_used']:>10,}/{p['token_cap']:<10,} {p['question'][:70]}")
+                cap = f"{p['token_cap']:,}" if p["token_cap"] > 0 else "no cap"
+                print(f"{p['id']}  {p['status']:<12} {p['mode']:<9} {p['tokens_used']:>10,} / {cap:<10} {p['question'][:70]}")
         return 0
     if args.cmd == "purge":
         n = Ledger(db, cfg).purge_source(args.url_prefix)

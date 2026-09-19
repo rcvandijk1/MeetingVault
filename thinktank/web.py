@@ -100,15 +100,40 @@ class Handler(BaseHTTPRequestHandler):
             L.close()
 
     # ------------------------------------------------------------ pages
+    def spend_panel(self) -> str:
+        """Spend status against the plan's monthly price. Shown, not enforced."""
+        from .governor import Governor
+
+        L = self.ledger()
+        try:
+            s = Governor(self.config, L).spend_status()
+        finally:
+            L.close()
+        pct = s["month_pct"]
+        bar = ""
+        if pct is not None:
+            width = max(0, min(100, pct))
+            colour = "#070" if pct < 70 else "#c80" if pct < 100 else "#a00"
+            bar = f"<div style='background:#ddd;height:.6rem;border-radius:.3rem;max-width:30rem'><div style='width:{width}%;height:100%;background:{colour};border-radius:.3rem'></div></div>"
+        return (f"<div style='border:1px solid #ddd;background:#fff;padding:.75rem;margin-bottom:1rem'><b>Spend status</b> (API-equivalent, measured by the supervisor; no limit is enforced)<br>"
+                f"Last 30 days: ${s['month_usd']:.2f} of ${s['max_usd_month']:.0f} max spending on the subscription"
+                f"{f' ({pct}%)' if pct is not None else ''} · {s['month_tokens']:,} tokens<br>"
+                f"Last 7 days: ${s['week_usd']:.2f} · {s['week_tokens']:,} tokens{bar}</div>")
+
+    @staticmethod
+    def tokens_cell(p: dict) -> str:
+        return f"{p['tokens_used']:,}/{p['token_cap']:,}" if p["token_cap"] > 0 else f"{p['tokens_used']:,} (no cap)"
+
     def inbox(self, L: Ledger, q: dict, error: str = "", form: dict | None = None) -> bytes:
         form = form or {}
         rows = "".join(
             f"<tr><td><a href='/problem/{esc(p['id'])}'>{esc(p['id'])}</a></td><td>{esc(p['mode'])}</td><td>{esc(p['question'])}</td>"
-            f"<td><span class=badge>{esc(p['status'])}</span></td><td>{p['tokens_used']:,}/{p['token_cap']:,}</td><td>{esc(p['deadline'])}</td></tr>"
+            f"<td><span class=badge>{esc(p['status'])}</span></td><td>{self.tokens_cell(p)}</td><td>{esc(p['deadline'])}</td></tr>"
             for p in L.list_problems()
         )
         err = f"<p class=err>{esc(error)}</p>" if error else ""
         body = f"""
+{self.spend_panel()}
 <h2>Post a problem</h2>{err}
 <form method=post action=/post>
 <label>Mode</label><select name=mode><option value=research {'selected' if form.get('mode') != 'ideas' else ''}>research</option><option value=ideas {'selected' if form.get('mode') == 'ideas' else ''}>ideas</option></select>
@@ -117,7 +142,7 @@ class Handler(BaseHTTPRequestHandler):
 <label>Must-answer list (3 to 7 lines)</label><textarea name=must_answer>{esc(form.get('must_answer'))}</textarea>
 <label>Evidence standard (source type and maximum age)</label><input type=text name=evidence_standard value="{esc(form.get('evidence_standard'))}">
 <label>Deliverable (format and length)</label><input type=text name=deliverable value="{esc(form.get('deliverable'))}">
-<label>Token cap</label><input type=text name=token_cap value="{esc(form.get('token_cap') or self.config.default_problem_token_cap)}">
+<label>Token cap (optional; empty means no cap, spend is shown above)</label><input type=text name=token_cap value="{esc(form.get('token_cap') or '')}">
 <label>Deadline (HH:MM for the next occurrence, or ISO date-time)</label><input type=text name=deadline value="{esc(form.get('deadline') or '07:00')}">
 <label><input type=checkbox name=confidential> This post contains confidential material (it will be rejected)</label>
 <p><button>Post to inbox</button></p></form>
@@ -131,20 +156,20 @@ class Handler(BaseHTTPRequestHandler):
             return page("Not found", "")
         tasks = "".join(f"<tr><td>{esc(t['id'])}</td><td>{t['depth']}</td><td>{esc(t['title'])}</td><td><span class=badge>{esc(t['status'])}</span></td><td>{t['tokens_used']:,}/{t['budget_tokens']:,}</td><td>{esc(t['summary'])}</td></tr>" for t in L.list_tasks(pid))
         runs = "".join(f"<tr><td>{esc(r['id'])}</td><td>{esc(r['role'])}</td><td>{esc(r['model'])}</td><td><span class=badge>{esc(r['status'])}</span></td><td>{r['total_tokens']:,}</td><td>${r['cost_usd']:.3f}</td><td>{esc(r['error'])}</td></tr>" for r in L.list_runs(pid))
-        notes = "".join(f"<tr><td>{esc(n['status'])}</td><td>{esc(n['claim'])}</td><td><a href='{esc(n['url'])}'>source</a> {esc(n['source_date'])}</td><td>{esc(n['verify_reason'])}</td></tr>" for n in L.list_notes(pid))
+        notes = "".join(f"<tr><td>{esc(n['status'])}</td><td>{esc(n['claim'])}</td><td><a href='{esc(n['url'])}'>source</a> {esc(n['source_date'])}</td><td>{esc(n['quote_check'] or '-')}</td><td>{esc(n['verify_reason'])}</td></tr>" for n in L.list_notes(pid))
         fetches = "".join(f"<tr><td>{esc(f['at'])}</td><td>{esc(f['role'])}</td><td>{esc(f['kind'])}</td><td>{esc(f['url'])}</td></tr>" for f in L.list_fetches(pid))
         events = "".join(f"<tr><td>{esc(e['at'])}</td><td>{esc(e['kind'])}</td><td>{esc(e['detail'])}</td></tr>" for e in L.events(pid))
         d = L.latest_deliverable(pid)
         v = L.latest_verdict(pid)
         body = f"""
-<p><span class=badge>{esc(p['status'])}</span> stage: {esc(p['stage'] or '-')} · mode: {esc(p['mode'])} · tokens {p['tokens_used']:,} / {p['token_cap']:,} · cost ${p['cost_usd']:.2f} · deadline {esc(p['deadline'])}</p>
+<p><span class=badge>{esc(p['status'])}</span> stage: {esc(p['stage'] or '-')} · mode: {esc(p['mode'])} · tokens {self.tokens_cell(p)} · cost ${p['cost_usd']:.2f} · deadline {esc(p['deadline'])}</p>
 {f"<p class=err>{esc(p['error'])}</p>" if p['error'] else ''}
 <p><b>Question:</b> {esc(p['question'])}<br><b>Decision it feeds:</b> {esc(p['decision'])}<br><b>Evidence standard:</b> {esc(p['evidence_standard'])}<br><b>Deliverable:</b> {esc(p['deliverable'])}</p>
 <ol>{''.join(f'<li>{esc(m)}</li>' for m in p['must_answer'])}</ol>
 {f"<h2>Verdict</h2><p class={'ok' if v['passed'] else 'err'}>{'pass' if v['passed'] else 'fail'}: {esc(v['reasons'])}</p>" if v else ''}
 {f"<h2>Deliverable v{d['version']}</h2><pre>{esc(d['body'])}</pre>" if d else ''}
 <h2>Subtasks</h2><table><tr><th>Id</th><th>Depth</th><th>Title</th><th>Status</th><th>Tokens</th><th>Summary</th></tr>{tasks}</table>
-<h2>Notes</h2><table><tr><th>Status</th><th>Claim</th><th>Source</th><th>Verification</th></tr>{notes}</table>
+<h2>Notes</h2><table><tr><th>Status</th><th>Claim</th><th>Source</th><th>Quote check</th><th>Verification</th></tr>{notes}</table>
 <h2>Runs</h2><table><tr><th>Id</th><th>Role</th><th>Model</th><th>Status</th><th>Tokens</th><th>Cost</th><th>Error</th></tr>{runs}</table>
 <h2>Fetch log</h2><table><tr><th>At</th><th>Role</th><th>Kind</th><th>URL or query</th></tr>{fetches}</table>
 <h2>Events</h2><table><tr><th>At</th><th>Kind</th><th>Detail</th></tr>{events}</table>"""
@@ -174,8 +199,8 @@ class Handler(BaseHTTPRequestHandler):
         rows = ""
         if query:
             for c in L.search_claims(query, limit=50, include_expired=True):
-                rows += f"<tr><td>{esc(c['claim'])}</td><td><a href='{esc(c['source_url'])}'>source</a> {esc(c['source_date'])}</td><td>{esc(c['claim_type'])}</td><td>{'expired' if c['expired'] else esc(c['expires_at'] or 'never')}</td><td>{'yes' if c['single_source'] else 'no'}</td></tr>"
-        body = f"<form><input type=text name=q value='{esc(query)}' placeholder='search verified claims'></form><table><tr><th>Claim</th><th>Source</th><th>Type</th><th>Expires</th><th>Single source</th></tr>{rows}</table>"
+                rows += f"<tr><td>{esc(c['claim'])}</td><td><a href='{esc(c['source_url'])}'>source</a> {esc(c['source_date'])}</td><td>{esc(c['claim_type'])}</td><td>{'expired' if c['expired'] else esc(c['expires_at'] or 'never')}</td><td>{'yes' if c['single_source'] else 'no'}</td><td>{'yes' if c['quote_checked'] else 'no'}</td></tr>"
+        body = f"<form><input type=text name=q value='{esc(query)}' placeholder='search verified claims'></form><table><tr><th>Claim</th><th>Source</th><th>Type</th><th>Expires</th><th>Single source</th><th>Quote machine-checked</th></tr>{rows}</table>"
         return page("Claim ledger", body)
 
 

@@ -2,13 +2,14 @@ from datetime import datetime, timezone
 
 from thinktank.runner import RunResult
 from thinktank.supervisor import Supervisor
+from thinktank.verify import Fetched
 
-from conftest import FakeRunner, post
+from conftest import FakeRunner, fake_fetcher, post
 
 
-def make(config, db, behaviours=None, **kw):
+def make(config, db, behaviours=None, pages=None, **kw):
     runner = FakeRunner(db, config, behaviours, **kw)
-    return Supervisor(config, db, runner), runner
+    return Supervisor(config, db, runner, fetcher=fake_fetcher(pages)), runner
 
 
 def test_research_problem_passes_and_lands_on_reply_board(config, db, ledger):
@@ -28,8 +29,66 @@ def test_research_problem_passes_and_lands_on_reply_board(config, db, ledger):
     p = ledger.get_problem(pid)
     assert p["status"] == "passed" and p["tokens_used"] == 1000 * len(runner.calls)
     assert all(t["status"] == "done" for t in ledger.list_tasks(pid))
-    assert len(ledger.list_fetches(pid)) == 3 * 2 + 3  # readers: search+fetch each; critic: one fetch per note
+    fetches = ledger.list_fetches(pid)
+    assert len(fetches) == 3 * 2 + 3 + 3  # readers: search+fetch each; supervisor quote check: one per URL; critic: one per note
+    assert sum(f["role"] == "supervisor" for f in fetches) == 3
+    assert all(n["quote_check"] == "pass" for n in ledger.list_notes(pid))
+    assert all(c["quote_checked"] for c in ledger.claims_for_problem(pid))
+    assert "quote not machine-checked" not in body
     assert ledger.list_escalations() == []
+
+
+def test_quote_not_on_page_is_rejected_before_the_critic_sees_it(config, db, ledger):
+    seen_by_critic = []
+
+    def critic(spec, call, on_fetch):
+        for n in call("list_notes", status="unverified"):
+            seen_by_critic.append(n["claim"])
+            assert n["quote_check"] in ("pass", "unsupported")
+            call("verify_note", note_id=n["id"], verified=True, reason="date ok, quote supports claim")
+
+    def synth(spec, call, on_fetch):
+        claims = call("list_claims")
+        call("submit_deliverable", body="\n".join(f"- {c['claim']} [{c['id']}]" for c in claims),
+             unanswered=["Pricing model"], disagreements="")
+
+    pages = {
+        "https://example.com/pricing-model": Fetched(ok=True, text="This page says nothing of the sort.", content_type="text/html", status=200),
+        "https://example.com/named-customers": Fetched(ok=False, status=0, content_type="application/pdf", error="unsupported content type application/pdf"),
+    }
+    sup, runner = make(config, db, {("critic", "verify"): critic, ("synthesizer", "synthesize"): synth}, pages=pages)
+    pid = post(ledger)
+    assert sup.run_problem(pid) == "passed"
+    notes = {n["claim"].split(":")[0]: n for n in ledger.list_notes(pid)}
+    assert notes["Pricing model"]["status"] == "rejected" and notes["Pricing model"]["quote_check"] == "fail"
+    assert "mechanical check" in notes["Pricing model"]["verify_reason"]
+    assert notes["Named customers"]["quote_check"] == "unsupported" and notes["Named customers"]["status"] == "verified"
+    assert notes["Vendors"]["quote_check"] == "pass"
+    assert sorted(seen_by_critic) == ["Named customers: fact one", "Vendors: fact one"]
+    claims = {c["claim"].split(":")[0]: c for c in ledger.claims_for_problem(pid)}
+    assert claims["Vendors"]["quote_checked"] == 1 and claims["Named customers"]["quote_checked"] == 0
+    body = ledger.list_replies()[0]["body"]
+    assert "1 with quote not machine-checked" in body and "Named customers: fact one — https://example.com/named-customers (2026-05-01) (single source; quote not machine-checked)" in body
+
+
+def test_critic_cannot_verify_a_note_that_failed_the_mechanical_check(config, db, ledger):
+    def cheating_critic(spec, call, on_fetch):
+        # Tries to verify every note, including one the supervisor already rejected.
+        from thinktank.mcp_server import Context, call_tool
+        from thinktank.ledger import Ledger
+        L = Ledger(config.db_path, config)
+        ctx = Context(role="critic", problem_id=spec.problem_id, run_id=spec.run_id)
+        for n in L.list_notes(spec.problem_id):
+            result, err = call_tool(L, ctx, "verify_note", {"note_id": n["id"], "verified": True, "reason": "trust me"})
+            if n["quote_check"] == "fail":
+                assert err and ("already rejected" in result or "mechanical" in result)
+        L.close()
+
+    pages = {"https://example.com/vendors": Fetched(ok=True, text="nothing here", content_type="text/html", status=200)}
+    sup, runner = make(config, db, {("critic", "verify"): cheating_critic}, pages=pages)
+    pid = post(ledger)
+    sup.run_problem(pid)
+    assert len(ledger.claims_for_problem(pid)) == 2
 
 
 def test_objections_trigger_exactly_one_revision(config, db, ledger):
@@ -82,14 +141,29 @@ def test_deadline_passed_escalates_before_spawning(config, db, ledger):
     assert "deadline passed" in ledger.list_escalations()[0]["reason"]
 
 
-def test_weekly_cap_blocks_daemon(config, db, ledger):
-    config.weekly_token_cap = 100
-    sup, runner = make(config, db)
-    pid = post(ledger)
-    ledger.conn.execute("INSERT INTO runs(id, problem_id, role, model, status, started_at, total_tokens) VALUES ('r_old', ?, 'lead', 'opus', 'ok', ?, 500)",
-                        (pid, datetime.now(timezone.utc).isoformat()))
+def test_no_cap_means_spend_is_shown_not_enforced(config, db, ledger):
+    config.spend_max_usd_month = 1.0
+    sup, runner = make(config, db, tokens_per_run=400_000)  # $2 per run at the fake's rate: far past "max spending"
+    pid = post(ledger, token_cap=None)
+    assert ledger.get_problem(pid)["token_cap"] == 0
     sup.daemon(once=True)
-    assert runner.calls == [] and ledger.get_problem(pid)["status"] == "queued"
+    assert ledger.get_problem(pid)["status"] == "passed"
+    spend = sup.governor.spend_status()
+    assert spend["month_pct"] > 100 and spend["month_tokens"] == 400_000 * len(runner.calls)
+    assert spend["week_usd"] == spend["month_usd"] > 1.0
+    body = ledger.list_replies()[0]["body"]
+    assert "(no cap)" in body
+
+
+def test_spend_prices_unreported_runs_at_list_rate(config, db, ledger):
+    sup, _ = make(config, db)
+    pid = post(ledger)
+    ledger.conn.execute("INSERT INTO runs(id, problem_id, role, model, status, started_at, total_tokens, cost_usd) VALUES ('r_a', ?, 'reader', 'haiku', 'ok', ?, 1000000, 0)",
+                        (pid, datetime.now(timezone.utc).isoformat()))
+    ledger.conn.execute("INSERT INTO runs(id, problem_id, role, model, status, started_at, total_tokens, cost_usd) VALUES ('r_b', ?, 'judge', 'sonnet', 'ok', ?, 10, 0.5)",
+                        (pid, datetime.now(timezone.utc).isoformat()))
+    s = sup.governor.spend_status()
+    assert s["month_tokens"] == 1_000_010 and s["month_usd"] == round(config.usd_per_million_tokens["haiku"] + 0.5, 2)
 
 
 def test_rate_limit_pauses_and_resumes_at_recorded_stage(config, db, ledger):
@@ -122,7 +196,7 @@ def test_reader_crash_reopens_once_then_escalates_task(config, db, ledger):
         if "Pricing" in t["title"]:
             seen[spec.run_id] = t["task_id"]
             return RunResult(status="timeout", error="killed")
-        call("post_note", claim=f"{t['title']}: fact", url="https://e.example/x", quote="fact", source_date="2026-01-01", claim_type="other")
+        call("post_note", claim=f"{t['title']}: fact", url="https://e.example/x", quote="The fact is stated.", source_date="2026-01-01", claim_type="other")
         call("finish_task", summary="ok")
 
     def synth(spec, call, on_fetch):
@@ -186,7 +260,7 @@ def test_concurrency_never_exceeds_three(config, db, ledger):
             live["max"] = max(live["max"], live["n"])
         time.sleep(0.05)
         t = call("get_task")
-        call("post_note", claim=f"{t['title']} fact", url="https://e.example/", quote="q", source_date=None, claim_type="other")
+        call("post_note", claim=f"{t['title']} fact", url="https://e.example/", quote="The quote is here.", source_date=None, claim_type="other")
         call("finish_task", summary="ok")
         with lock:
             live["n"] -= 1

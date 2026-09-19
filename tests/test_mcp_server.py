@@ -24,7 +24,7 @@ def test_role_scoping(ledger):
 def test_refusals_are_errors_not_exceptions(ledger):
     pid = post(ledger)
     reader = Context(role="reader", problem_id=pid, run_id="r1")
-    result, err = call_tool(ledger, reader, "post_note", {"claim": "c", "url": "nope", "quote": "q", "claim_type": "other"})
+    result, err = call_tool(ledger, reader, "post_note", {"claim": "c", "url": "nope", "quote": "a full supporting sentence", "claim_type": "other"})
     assert err and "refused" in result
     result, err = call_tool(ledger, reader, "post_note", {"claim": "c"})
     assert err and "bad arguments" in result

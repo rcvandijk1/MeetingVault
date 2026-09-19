@@ -10,11 +10,27 @@ from thinktank.db import init_db
 from thinktank.ledger import Ledger, Usage
 from thinktank.mcp_server import Context, call_tool
 from thinktank.runner import RunResult, RunSpec
+from thinktank.verify import Fetched
 
 
 @pytest.fixture
 def config(tmp_path):
     return Config(db_path=str(tmp_path / "t.sqlite3"), rate_limit_pause_seconds=1, lease_seconds=60)
+
+
+# A stand-in for the web: every page carries the quotes the default crew posts.
+PAGE_TEXT = "<html><body><p>Sample page. Fact one is stated here. The fact is stated. The quote is here. Costs 10k per seat.</p></body></html>"
+
+
+def fake_fetcher(pages: dict[str, Fetched] | None = None):
+    pages = pages or {}
+
+    def fetch(url: str) -> Fetched:
+        if url in pages:
+            return pages[url]
+        from thinktank.verify import html_to_text
+        return Fetched(ok=True, text=html_to_text(PAGE_TEXT), content_type="text/html", status=200)
+    return fetch
 
 
 @pytest.fixture
@@ -87,8 +103,9 @@ def lead_plan(spec, call, on_fetch):
     p = call("get_problem")
     call("search_claims", query=p["question"])
     n = len(p["must_answer"])
+    slice_tokens = int(p["token_cap"] * 0.5 / n) if p["token_cap"] else 200_000
     for item in p["must_answer"]:
-        call("post_subtask", title=item, criteria=f"answer {item} with dated sources", budget_tokens=int(p["token_cap"] * 0.5 / n))
+        call("post_subtask", title=item, criteria=f"answer {item} with dated sources", budget_tokens=slice_tokens)
     call("list_tasks")
 
 

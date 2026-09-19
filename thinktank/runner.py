@@ -105,8 +105,9 @@ class ClaudeCodeRunner:
             "--permission-prompts", "none",
             "--no-session-persistence",
             "--disable-slash-commands",
-            "--max-budget-usd", f"{spec.max_usd:.2f}",
         ]
+        if spec.max_usd > 0:
+            cmd += ["--max-budget-usd", f"{spec.max_usd:.2f}"]
         if self.config.auth_mode == "api_key":
             cmd.append("--bare")
         return cmd

@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Callable
 
-from . import prompts
+from . import prompts, verify
 from .config import Config
 from .db import init_db, now_iso
 from .governor import Governor
@@ -44,11 +44,13 @@ class RateLimited(Exception):
 
 
 class Supervisor:
-    def __init__(self, config: Config, db_path: str | None = None, runner: Runner | None = None):
+    def __init__(self, config: Config, db_path: str | None = None, runner: Runner | None = None,
+                 fetcher: Callable[[str], verify.Fetched] | None = None):
         self.config = config
         self.db_path = db_path or config.db_path
         init_db(self.db_path)
         self.runner: Runner = runner or ClaudeCodeRunner(config, self.db_path)
+        self.fetcher = fetcher or verify.fetch_text
         self.ledger = Ledger(self.db_path, config)
         self.governor = Governor(config, self.ledger)
 
@@ -87,18 +89,14 @@ class Supervisor:
                 self.ledger.set_status(p["id"], "queued")
             ran = False
             if self.in_run_window():
-                week = self.governor.week_summary()
-                if week["week_tokens"] < self.config.weekly_token_cap:
-                    now = now_iso()
-                    for p in self.ledger.list_problems("queued"):
-                        if p["not_before"] and p["not_before"] > now:
-                            continue
-                        status = self.run_problem(p["id"])
-                        log.info("problem %s -> %s", p["id"], status)
-                        ran = True
-                        break
-                else:
-                    log.warning("weekly cap reached (%s); idle", week)
+                now = now_iso()
+                for p in self.ledger.list_problems("queued"):
+                    if p["not_before"] and p["not_before"] > now:
+                        continue
+                    status = self.run_problem(p["id"])
+                    log.info("problem %s -> %s; spend %s", p["id"], status, self.governor.spend_status())
+                    ran = True
+                    break
             if once:
                 return
             if not ran:
@@ -184,13 +182,15 @@ class Supervisor:
         L = self.ledger
         if L.list_tasks(pid):
             return
+        remaining = self.governor.remaining_tokens(L.get_problem(pid))
         self._run(L, pid, role="lead", stage="plan", system_prompt=prompts.LEAD,
-                  extra={"Remaining token cap": self.governor.remaining_tokens(L.get_problem(pid))})
+                  extra={"Remaining token cap": "none (spend is shown, not capped)" if remaining is None else remaining})
         if not L.list_tasks(pid):
             # Deterministic fallback: the lead produced no plan, so one subtask per must-answer item.
             p = L.get_problem(pid)
             items = p["must_answer"]
-            slice_tokens = max(int(self.governor.remaining_tokens(p) * 0.5 / max(len(items), 1)), 1)
+            remaining = self.governor.remaining_tokens(p)
+            slice_tokens = 200_000 if remaining is None else max(int(remaining * 0.5 / max(len(items), 1)), 1)
             for item in items:
                 L.create_task(pid, title=item, criteria=f"Answer '{item}' with dated, quoted sources meeting: {p['evidence_standard']}",
                               budget_tokens=slice_tokens, merge_owner="supervisor")
@@ -252,9 +252,14 @@ class Supervisor:
         return job
 
     def stage_verify(self, pid: str) -> None:
+        """Two passes. First the supervisor checks by code that each quote is
+        on its page; a quote that is not there is not evidence and the note is
+        rejected before any model sees it. Then the critic judges what needs
+        judgement: date and whether the quote supports the claim."""
         L = self.ledger
+        self.check_quotes(pid)
         for _ in range(2):
-            if not L.list_notes(pid, status="unverified"):
+            if not L.list_notes(pid, status="unverified", quote_checked=True):
                 break
             self._guard(pid)
             self._run(L, pid, role="critic", stage="verify", system_prompt=prompts.CRITIC_VERIFY, tools_key="critic_verify", round_no=1)
@@ -262,6 +267,28 @@ class Supervisor:
             L.verify_note(n["id"], verified=False, reason="not verified within the critic's budget", run_id="supervisor")
         if not L.claims_for_problem(pid):
             raise Stop("no note survived verification")
+
+    def check_quotes(self, pid: str) -> dict[str, int]:
+        """Mechanical quote check for every unverified note that has none yet.
+        Pages are fetched once per URL. Every fetch is logged."""
+        L = self.ledger
+        counts = {"pass": 0, "fail": 0, "unsupported": 0}
+        cache: dict[str, verify.Fetched] = {}
+
+        def fetch(url: str) -> verify.Fetched:
+            if url not in cache:
+                L.log_fetch("supervisor", pid, "supervisor", "fetch", url)
+                cache[url] = self.fetcher(url)
+            return cache[url]
+
+        for n in L.list_notes(pid, status="unverified"):
+            if n["quote_check"]:
+                continue
+            result, detail = verify.check_quote(n["url"], n["quote"], fetcher=fetch)
+            L.set_quote_check(n["id"], result, detail)
+            counts[result] += 1
+        L.event(pid, "quote_check_done", ", ".join(f"{k} {v}" for k, v in counts.items()))
+        return counts
 
     def stage_synthesize(self, pid: str) -> None:
         L = self.ledger
@@ -370,7 +397,7 @@ class Supervisor:
         v = L.latest_verdict(pid)
         claims = L.claims_for_problem(pid)
         lines = [f"# Partial result for {pid}", "", f"Question: {p['question']}", "",
-                 f"Tokens used: {p['tokens_used']:,} of {p['token_cap']:,}; API-equivalent cost ${self._cost(p):.2f}", ""]
+                 f"Tokens used: {self._tokens_line(p)}; API-equivalent cost ${self._cost(p):.2f}", ""]
         tasks = L.list_tasks(pid)
         if tasks:
             lines.append("## Subtasks")
@@ -399,8 +426,9 @@ class Supervisor:
         p = L.get_problem(pid)
         claims = L.claims_for_problem(pid)
         single = [c for c in claims if c["single_source"]]
+        unchecked = [c for c in claims if not c["quote_checked"]]
         lines = [f"# {p['question']}", "",
-                 f"Mode: {p['mode']} · Deliverable v{d['version']} · Tokens: {p['tokens_used']:,} of {p['token_cap']:,} · "
+                 f"Mode: {p['mode']} · Deliverable v{d['version']} · Tokens: {self._tokens_line(p)} · "
                  f"API-equivalent cost: ${self._cost(p):.2f}", ""]
         if d["unanswered"]:
             lines += ["## Unanswered must-answer items", *[f"- {u}" for u in d["unanswered"]], ""]
@@ -408,15 +436,26 @@ class Supervisor:
             lines += ["## Unresolved disagreements", d["disagreements"], ""]
         lines += ["## Deliverable", d["body"], ""]
         if claims:
-            lines += [f"## Verified claims ({len(claims)}, {len(single)} single-source)", *self._claim_lines(claims), ""]
+            head = f"## Verified claims ({len(claims)}, {len(single)} single-source"
+            head += f", {len(unchecked)} with quote not machine-checked)" if unchecked else ")"
+            lines += [head, *self._claim_lines(claims), ""]
         return "\n".join(lines)
+
+    @staticmethod
+    def _tokens_line(p: dict) -> str:
+        return f"{p['tokens_used']:,} of {p['token_cap']:,}" if p["token_cap"] > 0 else f"{p['tokens_used']:,} (no cap)"
 
     @staticmethod
     def _claim_lines(claims: list[dict]) -> list[str]:
         out = []
         for c in claims:
-            flag = " (single source)" if c["single_source"] else ""
-            out.append(f"- [{c['id']}] {c['claim']} — {c['source_url']} ({c['source_date'] or 'undated'}){flag}")
+            flags = []
+            if c["single_source"]:
+                flags.append("single source")
+            if not c["quote_checked"]:
+                flags.append("quote not machine-checked")
+            suffix = f" ({'; '.join(flags)})" if flags else ""
+            out.append(f"- [{c['id']}] {c['claim']} — {c['source_url']} ({c['source_date'] or 'undated'}){suffix}")
         return out
 
     def _cost(self, p: dict) -> float:

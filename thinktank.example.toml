@@ -16,10 +16,10 @@ critic = "sonnet"
 synthesizer = "opus"
 judge = "sonnet"
 
-# Section 9: caps the supervisor measures itself. Calibrate weekly_token_cap
-# against the usage page after two problems, then monthly.
-# weekly_token_cap = 10000000
-# default_problem_token_cap = 3000000
+# Section 9: no hard limit on subscription spend. The board shows 7-day and
+# 30-day API-equivalent spend against this figure (the plan's monthly price).
+# spend_max_usd_month = 100.0
+# Guard against one runaway agent, not against total spend. 0 disables it.
 # max_usd_per_run = 8.0
 # run_timeout_seconds = 1800
 # max_concurrent_agents = 3

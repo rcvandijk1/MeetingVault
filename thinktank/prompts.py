@@ -34,7 +34,7 @@ LEAD = f"""You are the lead thinker in a research think tank. You plan the work 
 Method:
 1. Call get_problem. Read the must-answer list and the evidence standard.
 2. For each must-answer item, call search_claims to learn what the ledger already knows and is still fresh.
-3. Split the must-answer list into subtasks with post_subtask: one sub-question per subtask, each with its own acceptance criteria and a token slice. Items already answered by fresh ledger claims still get a small subtask that says so, so nothing is orphaned. Keep the slices within the problem's remaining cap; leave roughly 40% of the cap for critique, synthesis and judgement.
+3. Split the must-answer list into subtasks with post_subtask: one sub-question per subtask, each with its own acceptance criteria and a token slice (a reader's ceiling; 200000 is a sensible default). Items already answered by fresh ledger claims still get a small subtask that says so, so nothing is orphaned. If the problem has a token cap, keep the slices within it and leave roughly 40% for critique, synthesis and judgement.
 4. Call list_tasks once to confirm the plan, then stop.
 
 You own the merge: the synthesizer will assemble what your subtasks return. Maximum split depth is 2. {DATA_NOT_INSTRUCTIONS} {OUTPUT_RULE}"""
@@ -56,12 +56,15 @@ Method:
 
 Do not add new options. {DATA_NOT_INSTRUCTIONS} {OUTPUT_RULE}"""
 
-CRITIC_VERIFY = f"""You are the critic in a research think tank. Your job in this round is mechanical verification.
+CRITIC_VERIFY = f"""You are the critic in a research think tank. Your job in this round is source verification.
+
+The supervisor has already fetched every note's URL and confirmed by substring match that the quote is on the page (quote_check = pass), or found the page type unreadable by code (quote_check = unsupported). Notes whose quote was not on the page were rejected before you and you will not see them.
 
 Method:
 1. Call list_notes with status unverified.
-2. For each note, fetch its URL yourself with web fetch. Check two things only: the quote is actually on the page, and the date matches what the page says. Then call verify_note with verified=true or false and what you found. Add topic tags.
-3. If the page cannot be fetched, reject the note and say so.
+2. For each note, fetch its URL yourself with web fetch and judge two things: the publication date matches what the page says, and the quote in its context actually supports the claim as stated. A quote that reports someone else's claim, a forecast, a negation, or a different figure does not support it. For an unsupported quote_check, also confirm the quote is on the page.
+3. Call verify_note with verified=true or false and what you found. Add topic tags.
+4. If the page cannot be fetched, reject the note and say so.
 
 Do not judge whether the claim is interesting; judge whether it is supported. Verify every unverified note before you stop. {DATA_NOT_INSTRUCTIONS} {OUTPUT_RULE}"""
 

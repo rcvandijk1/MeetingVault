@@ -36,9 +36,18 @@ def test_deadline_hhmm_is_next_occurrence():
         parse_deadline("2020-01-01T00:00:00+00:00", now)
 
 
-def test_default_token_cap_applied(ledger, config):
+def test_token_cap_is_optional(ledger, config):
     pid = post(ledger, token_cap=None)
-    assert ledger.get_problem(pid)["token_cap"] == config.default_problem_token_cap
+    assert ledger.get_problem(pid)["token_cap"] == 0
+    # With no cap, top-level slices are only the reader's own ceiling.
+    ledger.create_task(pid, title="a", criteria="c", budget_tokens=50_000_000, merge_owner="lead")
+    with pytest.raises(LedgerError, match="negative"):
+        post(ledger, token_cap=-1)
+
+
+def checked(ledger, nid, result="pass"):
+    ledger.set_quote_check(nid, result, "test")
+    return nid
 
 
 def test_split_rules(ledger, config):
@@ -80,13 +89,15 @@ def test_expire_leases_uses_clock(ledger, config):
 
 def test_note_schema_limits(ledger, config):
     pid = post(ledger)
-    kw = dict(task_id=None, run_id=None, url="https://x.example/a", quote="q", source_date="2026-01-01")
+    kw = dict(task_id=None, run_id=None, url="https://x.example/a", quote="a full supporting sentence", source_date="2026-01-01")
     with pytest.raises(LedgerError, match="claim is required"):
         ledger.post_note(pid, claim="", **kw)
     with pytest.raises(LedgerError, match="longer than"):
         ledger.post_note(pid, claim="x" * (config.note_claim_max_chars + 1), **kw)
     with pytest.raises(LedgerError, match="http"):
-        ledger.post_note(pid, claim="c", task_id=None, run_id=None, url="ftp://nope", quote="q", source_date=None)
+        ledger.post_note(pid, claim="c", task_id=None, run_id=None, url="ftp://nope", quote="a full supporting sentence", source_date=None)
+    with pytest.raises(LedgerError, match="shorter than"):
+        ledger.post_note(pid, claim="c", task_id=None, run_id=None, url="https://x.example/", quote="10k", source_date=None)
     with pytest.raises(LedgerError, match="claim_type"):
         ledger.post_note(pid, claim="c", claim_type="rumour", **kw)
     nid = ledger.post_note(pid, claim="c", **kw)
@@ -95,27 +106,33 @@ def test_note_schema_limits(ledger, config):
 
 def test_verify_note_creates_claim_with_expiry_and_single_source_flag(ledger, config):
     pid = post(ledger)
-    n1 = ledger.post_note(pid, task_id=None, run_id=None, claim="ACME charges 10k", url="https://a.example/p", quote="10k", source_date="2026-01-01", claim_type="price")
+    n1 = ledger.post_note(pid, task_id=None, run_id=None, claim="ACME charges 10k", url="https://a.example/p", quote="ACME charges 10k per seat", source_date="2026-01-01", claim_type="price")
+    with pytest.raises(LedgerError, match="mechanical check"):
+        ledger.verify_note(n1, verified=True, reason="found", run_id="critic1")
+    checked(ledger, n1)
     cid = ledger.verify_note(n1, verified=True, reason="found", run_id="critic1", tags="acme,price")
     c = ledger.get_claim(cid)
-    assert c["single_source"] == 1
+    assert c["single_source"] == 1 and c["quote_checked"] == 1
     assert c["expires_at"] is not None
     with pytest.raises(LedgerError, match="already"):
         ledger.verify_note(n1, verified=True, reason="again", run_id="critic1")
-    n2 = ledger.post_note(pid, task_id=None, run_id=None, claim="ACME charges 10k", url="https://b.example/q", quote="10k", source_date="2026-02-01", claim_type="price")
+    n2 = checked(ledger, ledger.post_note(pid, task_id=None, run_id=None, claim="ACME charges 10k", url="https://b.example/q", quote="ACME's price is 10k per seat", source_date="2026-02-01", claim_type="price"), "unsupported")
     c2 = ledger.verify_note(n2, verified=True, reason="found", run_id="critic1")
     assert ledger.get_claim(cid)["single_source"] == 0
-    assert ledger.get_claim(c2)["single_source"] == 0
-    n3 = ledger.post_note(pid, task_id=None, run_id=None, claim="made up", url="https://c.example/", quote="nope", source_date=None)
-    assert ledger.verify_note(n3, verified=False, reason="quote not on page", run_id="critic1") is None
+    assert ledger.get_claim(c2)["single_source"] == 0 and ledger.get_claim(c2)["quote_checked"] == 0
+    n3 = checked(ledger, ledger.post_note(pid, task_id=None, run_id=None, claim="made up", url="https://c.example/", quote="nope, not at all", source_date=None))
+    assert ledger.verify_note(n3, verified=False, reason="date wrong", run_id="critic1") is None
     assert ledger.get_note(n3)["status"] == "rejected"
-    hist = ledger.post_note(pid, task_id=None, run_id=None, claim="founded 1990", url="https://d.example/", quote="1990", source_date=None, claim_type="historical")
+    n4 = ledger.post_note(pid, task_id=None, run_id=None, claim="never there", url="https://c.example/", quote="nope, never there", source_date=None)
+    ledger.set_quote_check(n4, "fail", "quote not found on page")
+    assert ledger.get_note(n4)["status"] == "rejected" and "mechanical" in ledger.get_note(n4)["verify_reason"]
+    hist = checked(ledger, ledger.post_note(pid, task_id=None, run_id=None, claim="founded 1990", url="https://d.example/", quote="founded in 1990", source_date=None, claim_type="historical"))
     assert ledger.get_claim(ledger.verify_note(hist, verified=True, reason="ok", run_id="c"))["expires_at"] is None
 
 
 def test_search_claims_hides_expired_unless_asked(ledger):
     pid = post(ledger)
-    n = ledger.post_note(pid, task_id=None, run_id=None, claim="Broadcaster X uses vendor Y", url="https://a.example/", quote="uses Y", source_date=None, claim_type="capability")
+    n = checked(ledger, ledger.post_note(pid, task_id=None, run_id=None, claim="Broadcaster X uses vendor Y", url="https://a.example/", quote="Broadcaster X uses Y", source_date=None, claim_type="capability"))
     cid = ledger.verify_note(n, verified=True, reason="ok", run_id="c", tags="broadcast")
     assert [c["id"] for c in ledger.search_claims("vendor broadcaster")] == [cid]
     ledger.conn.execute("UPDATE claims SET expires_at='2000-01-01T00:00:00+00:00' WHERE id=?", (cid,))

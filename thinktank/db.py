@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS notes (
   claim_type TEXT NOT NULL DEFAULT 'other',
   status TEXT NOT NULL DEFAULT 'unverified',   -- unverified|verified|rejected
   verify_reason TEXT,
+  quote_check TEXT,                   -- NULL|pass|fail|unsupported (mechanical substring test by the supervisor)
+  quote_check_detail TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -81,6 +83,7 @@ CREATE TABLE IF NOT EXISTS claims (
   claim_type TEXT NOT NULL DEFAULT 'other',
   tags TEXT NOT NULL DEFAULT '',
   single_source INTEGER NOT NULL DEFAULT 1,
+  quote_checked INTEGER NOT NULL DEFAULT 0,   -- 1 when the quote was found on the page by code, not by a model
   purged INTEGER NOT NULL DEFAULT 0
 );
 
@@ -214,9 +217,21 @@ def connect(path: str) -> sqlite3.Connection:
     return conn
 
 
+# Columns added after the first release; applied to existing databases.
+MIGRATIONS = [
+    ("notes", "quote_check", "TEXT"),
+    ("notes", "quote_check_detail", "TEXT"),
+    ("claims", "quote_checked", "INTEGER NOT NULL DEFAULT 0"),
+]
+
+
 def init_db(path: str) -> None:
     conn = connect(path)
     try:
         conn.executescript(SCHEMA)
+        for table, column, decl in MIGRATIONS:
+            have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
     finally:
         conn.close()

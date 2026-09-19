@@ -36,9 +36,10 @@ class Config:
     # CLI in bare mode with a Console spend limit as the outer guard.
     auth_mode: str = "subscription"
     models: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MODELS))
-    # Governor (section 9)
-    weekly_token_cap: int = 10_000_000
-    default_problem_token_cap: int = 3_000_000
+    # Spend status (section 9). There is no hard limit on the subscription;
+    # the board shows spend against this figure, the plan's monthly price.
+    spend_max_usd_month: float = 100.0
+    # Guard against one runaway agent, not against total spend. 0 disables.
     max_usd_per_run: float = 8.0
     run_timeout_seconds: int = 1800
     max_concurrent_agents: int = 3
@@ -57,6 +58,8 @@ class Config:
     # Reader note limits (section 10: fixed schema with length limits)
     note_claim_max_chars: int = 400
     note_quote_max_chars: int = 600
+    # A quote this short is found on almost any page; it is not evidence.
+    note_quote_min_chars: int = 12
     # Claim expiry by type, in days (section 8). None means never.
     claim_expiry_days: dict[str, int | None] = field(
         default_factory=lambda: {

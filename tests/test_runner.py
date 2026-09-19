@@ -27,6 +27,7 @@ def test_command_limits_tools_and_wires_ledger(tmp_path):
     judge = r.command(spec(role="judge", builtin_tools=()))
     assert judge[judge.index("--tools") + 1] == ""
     assert judge[judge.index("--allowedTools") + 1] == "mcp__ledger__*"
+    assert "--max-budget-usd" not in r.command(spec(max_usd=0))
 
 
 def test_auth_modes(tmp_path, monkeypatch):

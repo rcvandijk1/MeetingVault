@@ -131,9 +131,9 @@ class Ledger:
             problems.append("evidence standard is required")
         if not deliverable.strip():
             problems.append("deliverable is required")
-        cap = int(token_cap or 0) or self.config.default_problem_token_cap
-        if cap <= 0:
-            problems.append("token cap must be positive")
+        cap = int(token_cap or 0)  # 0 means no cap: spend is shown on the board, not enforced
+        if cap < 0:
+            problems.append("token cap cannot be negative")
         try:
             deadline_iso = parse_deadline(deadline)
         except LedgerError as e:
@@ -216,17 +216,20 @@ class Ledger:
             raise LedgerError("budget slice must be positive")
         p = self.get_problem(pid)
         depth = 1
+        remaining: int | None
         if parent_id:
             parent = self.get_task(parent_id)
             if parent["problem_id"] != pid:
                 raise LedgerError("parent task belongs to another problem")
             depth = parent["depth"] + 1
             remaining = parent["budget_tokens"] - self._children_budget(parent_id) - parent["tokens_used"]
-        else:
+        elif p["token_cap"] > 0:
             remaining = p["token_cap"] - p["tokens_used"] - self._children_budget(None, pid)
+        else:
+            remaining = None  # the problem has no cap; top-level slices are the reader's own ceiling
         if depth > self.config.max_split_depth:
             raise LedgerError(f"maximum split depth is {self.config.max_split_depth}; deeper splits are refused")
-        if budget_tokens > remaining:
+        if remaining is not None and budget_tokens > remaining:
             raise LedgerError(f"budget slice {budget_tokens} exceeds what the parent has left ({max(remaining, 0)})")
         tid = new_id("t")
         self.conn.execute(
@@ -313,6 +316,8 @@ class Ledger:
             raise LedgerError("url must be an http(s) URL")
         if not quote:
             raise LedgerError("quote is required: the exact supporting passage")
+        if len(quote) < self.config.note_quote_min_chars:
+            raise LedgerError(f"quote shorter than {self.config.note_quote_min_chars} characters; quote the full supporting sentence")
         if len(quote) > self.config.note_quote_max_chars:
             raise LedgerError(f"quote longer than {self.config.note_quote_max_chars} characters; keep it short")
         if claim_type not in CLAIM_TYPES:
@@ -329,7 +334,7 @@ class Ledger:
         )
         return nid
 
-    def list_notes(self, pid: str, status: str | None = None, task_id: str | None = None) -> list[dict]:
+    def list_notes(self, pid: str, status: str | None = None, task_id: str | None = None, quote_checked: bool = False) -> list[dict]:
         sql, args = "SELECT * FROM notes WHERE problem_id=?", [pid]
         if status:
             sql += " AND status=?"
@@ -337,7 +342,20 @@ class Ledger:
         if task_id:
             sql += " AND task_id=?"
             args.append(task_id)
+        if quote_checked:
+            sql += " AND quote_check IN ('pass','unsupported')"
         return [dict(r) for r in self._all(sql + " ORDER BY created_at", *args)]
+
+    def set_quote_check(self, nid: str, result: str, detail: str) -> None:
+        """Record the supervisor's mechanical check. A failed check rejects
+        the note outright: a quote that is not on the page is not evidence."""
+        n = self.get_note(nid)
+        self.conn.execute("UPDATE notes SET quote_check=?, quote_check_detail=? WHERE id=?", (result, detail[:500], nid))
+        if result == "fail" and n["status"] == "unverified":
+            self.conn.execute("UPDATE notes SET status='rejected', verify_reason=? WHERE id=?", (f"mechanical check: {detail}"[:1000], nid))
+            self.event(n["problem_id"], "note_rejected", f"{nid}: quote check failed: {detail[:200]}")
+        else:
+            self.event(n["problem_id"], "quote_check", f"{nid}: {result}: {detail[:200]}")
 
     def get_note(self, nid: str) -> dict:
         row = self._one("SELECT * FROM notes WHERE id=?", nid)
@@ -353,6 +371,8 @@ class Ledger:
         n = self.get_note(nid)
         if n["status"] != "unverified":
             raise LedgerError(f"note {nid} already {n['status']}")
+        if verified and n["quote_check"] not in ("pass", "unsupported"):
+            raise LedgerError(f"note {nid} cannot be verified: its quote was not confirmed on the page by the mechanical check")
         status = "verified" if verified else "rejected"
         self.conn.execute("UPDATE notes SET status=?, verify_reason=? WHERE id=?", (status, reason[:1000], nid))
         if not verified:
@@ -369,10 +389,10 @@ class Ledger:
         cid = new_id("c")
         self.conn.execute(
             """INSERT INTO claims(id, claim, source_url, quote, source_date, retrieved_at, verified_by, verified_at,
-               expires_at, problem_id, claim_type, tags, single_source)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               expires_at, problem_id, claim_type, tags, single_source, quote_checked)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (cid, n["claim"], n["url"], n["quote"], n["source_date"], n["created_at"], run_id, now_iso(),
-             expires, n["problem_id"], n["claim_type"], tags.strip(), 0 if other else 1),
+             expires, n["problem_id"], n["claim_type"], tags.strip(), 0 if other else 1, 1 if n["quote_check"] == "pass" else 0),
         )
         if other:
             self.conn.execute("UPDATE claims SET single_source=0 WHERE id=?", (other["id"],))
@@ -589,13 +609,27 @@ class Ledger:
     def list_fetches(self, pid: str) -> list[dict]:
         return [dict(r) for r in self._all("SELECT * FROM fetches WHERE problem_id=? ORDER BY id", pid)]
 
-    def tokens_since(self, iso_ts: str) -> int:
-        row = self._one("SELECT COALESCE(SUM(total_tokens),0) s FROM runs WHERE started_at >= ?", iso_ts)
-        return int(row["s"])
+    def spend_since(self, days: int) -> dict:
+        """Tokens and API-equivalent dollars over the last N days. Runs that
+        reported no cost are priced at the configured list rate for their model."""
+        start = (datetime.now(timezone.utc) - timedelta(days=days)).replace(microsecond=0).isoformat()
+        rows = self._all("SELECT model, COALESCE(SUM(total_tokens),0) t, COALESCE(SUM(cost_usd),0) c, "
+                         "COALESCE(SUM(CASE WHEN cost_usd=0 THEN total_tokens ELSE 0 END),0) unpriced "
+                         "FROM runs WHERE started_at >= ? GROUP BY model", start)
+        tokens, usd = 0, 0.0
+        for r in rows:
+            tokens += int(r["t"])
+            usd += float(r["c"]) + self._list_price(int(r["unpriced"]), r["model"])
+        return {"tokens": tokens, "usd": usd}
 
-    def week_tokens(self) -> int:
-        start = datetime.now(timezone.utc) - timedelta(days=7)
-        return self.tokens_since(start.replace(microsecond=0).isoformat())
+    def _list_price(self, tokens: int, model: str) -> float:
+        rate = None
+        for alias, per_million in self.config.usd_per_million_tokens.items():
+            if alias in (model or ""):
+                rate = per_million
+        if rate is None:
+            rate = max(self.config.usd_per_million_tokens.values())
+        return tokens / 1_000_000 * rate
 
     # ------------------------------------------------------------ reply board, escalation queue
     def post_reply(self, pid: str, deliverable_id: str, body: str) -> str:

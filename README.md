@@ -28,12 +28,13 @@ You --post--> Inbox board --> Supervisor (plain code)
 | `thinktank/mcp_server.py` | The one small MCP server agents talk to. Role-scoped tools over stdio, no shell, no files, no git. |
 | `thinktank/supervisor.py` | Stage machine per problem (research and ideas), leases, max 3 concurrent agents, cap and deadline guard between stages, escalation, rate-limit pause. Re-entrant: resumes at the recorded stage. |
 | `thinktank/runner.py` | Spawns `claude -p` with the role's tool set, the ledger as the only MCP server, prompts denied, a per-run dollar ceiling, an empty working directory. Reads usage and logs every fetch from the stream. |
-| `thinktank/governor.py` | Token caps per problem and per week, per-run ceilings, API-equivalent cost. |
+| `thinktank/verify.py` | Mechanical quote check, no model involved: fetch the page, strip the markup, substring-match the quote. |
+| `thinktank/governor.py` | Spend status (7 and 30 days, tokens and API-equivalent dollars) against the plan's monthly price; optional per-problem cap; per-run ceiling. |
 | `thinktank/prompts.py` | System prompts per role and stage. |
 | `thinktank/web.py` | Minimal board over SQLite: inbox with post form, problem detail, replies, escalations, claim lookup. |
 | `thinktank/cli.py` | `init`, `post`, `daemon`, `run`, `web`, `status`, `purge`. |
 | `docs/baseline-template.md` | Phase 0: measure the built-in Research feature before trusting this. |
-| `tests/` | 35 tests with a fake runner that plays every role through the same tools a real agent uses. |
+| `tests/` | 42 tests with a fake runner that plays every role through the same tools a real agent uses, and a fake web. |
 
 ## Quick start
 
@@ -61,8 +62,11 @@ The supervisor needs a `claude` login on the box (subscription mode) or
 
 Research: `plan` (lead splits the must-answer list into subtasks) → `read`
 (readers, one sub-question each, blind to each other, up to 3 at once) →
-`verify` (critic re-fetches every cited URL; verified notes become ledger
-claims, the rest are dropped) → `synthesize` (from verified claims only) →
+`verify` (two passes: the supervisor fetches every cited URL itself and
+substring-matches the quote, rejecting notes whose quote is not on the
+page before any model sees them; then the critic re-fetches and judges the
+date and whether the quote in context supports the claim; verified notes
+become ledger claims, the rest are dropped) → `synthesize` (from verified claims only) →
 `critique` (objections must name a claim or a must-answer item) → `revise`
 (once, only if there were objections) → `judge` (sees brief and deliverable,
 nothing else) → `close` (reply board with cost printed, or escalation).
@@ -77,6 +81,12 @@ A failed judgement escalates. It never loops back.
 
 - Posts missing a field, with fewer than 3 or more than 7 must-answer items,
   a past deadline, or the confidential flag are rejected before any agent runs.
+  The token cap is optional; empty means no cap.
+- A quote that code cannot find on the page is not evidence: the note is
+  rejected and the critic cannot override that. Quotes must be at least 12
+  characters, so a bare figure cannot match by accident. Pages the verifier
+  cannot read (PDFs, huge pages) go to the critic with the claim marked
+  "quote not machine-checked" on the reply and in the ledger.
 - Readers get web search, web fetch and the ledger. Thinkers, synthesizer
   and judge get the ledger only. The critic gets web fetch only in the
   verification round. Nothing gets a shell, files or git.
@@ -87,17 +97,22 @@ A failed judgement escalates. It never loops back.
 - Claim ledger stores verified claims with provenance and expiry; expired
   claims are returned only on request and marked; reports are never fed
   back as knowledge. `thinktank purge <url-prefix>` removes a bad source.
-- Governor: per-problem cap from the post, weekly cap from config, dollar
-  ceiling per run, deadline. Checked between stages and before every batch
-  of readers. On a rate-limit response the problem is queued with a pause,
-  never retried in a loop.
-- Every run's tokens and cost are recorded; the reply prints them.
+- Spend: no hard limit on the subscription. Every run's tokens and cost are
+  recorded; the inbox board and `thinktank status` show 7-day and 30-day
+  spend against `spend_max_usd_month` (default 100, the plan's price). What
+  still stops a problem: its own optional token cap, its deadline, and the
+  per-run dollar ceiling that guards against one runaway agent. Checked
+  between stages and before every batch of readers. On a rate-limit
+  response the problem is queued with a pause, never retried in a loop.
+- The reply prints tokens and API-equivalent cost per problem.
 
 ## Calibration
 
 The plan's limits are not exposed as token counts. Run two problems, read
-the usage page before and after, derive tokens per percentage point, and
-set `weekly_token_cap`. Repeat monthly.
+the usage page before and after, and compare with the spend panel to learn
+what a percentage point of your plan costs in API-equivalent dollars.
+Adjust `spend_max_usd_month` if you want the panel to track the plan's
+real ceiling rather than its price. Repeat monthly.
 
 ## Known gaps in v0.1
 
