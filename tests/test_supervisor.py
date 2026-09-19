@@ -1,0 +1,220 @@
+from datetime import datetime, timezone
+
+from thinktank.runner import RunResult
+from thinktank.supervisor import Supervisor
+
+from conftest import FakeRunner, post
+
+
+def make(config, db, behaviours=None, **kw):
+    runner = FakeRunner(db, config, behaviours, **kw)
+    return Supervisor(config, db, runner), runner
+
+
+def test_research_problem_passes_and_lands_on_reply_board(config, db, ledger):
+    sup, runner = make(config, db)
+    pid = post(ledger)
+    assert sup.run_problem(pid) == "passed"
+    roles = [(s.role, s.stage) for s in runner.calls]
+    assert roles[0] == ("lead", "plan")
+    assert roles.count(("reader", "read")) == 3
+    assert ("critic", "verify") in roles and ("synthesizer", "synthesize") in roles
+    assert ("critic", "critique") in roles and roles[-1] == ("judge", "judge")
+    assert ("synthesizer", "revise") not in roles  # no objections, no revision
+    replies = ledger.list_replies()
+    assert len(replies) == 1
+    body = replies[0]["body"]
+    assert "API-equivalent cost" in body and "Tokens:" in body and "Verified claims (3, 3 single-source)" in body
+    p = ledger.get_problem(pid)
+    assert p["status"] == "passed" and p["tokens_used"] == 1000 * len(runner.calls)
+    assert all(t["status"] == "done" for t in ledger.list_tasks(pid))
+    assert len(ledger.list_fetches(pid)) == 3 * 2 + 3  # readers: search+fetch each; critic: one fetch per note
+    assert ledger.list_escalations() == []
+
+
+def test_objections_trigger_exactly_one_revision(config, db, ledger):
+    def critique(spec, call, on_fetch):
+        d = call("get_deliverable")
+        claims = call("list_claims")
+        call("post_critique", deliverable_id=d["id"], body="weak", objections=[{"claim_id": claims[0]["id"], "objection": "quote too short"}])
+
+    sup, runner = make(config, db, {("critic", "critique"): critique})
+    pid = post(ledger)
+    assert sup.run_problem(pid) == "passed"
+    stages = [s.stage for s in runner.calls]
+    assert stages.count("revise") == 1 and stages.count("critique") == 1
+    assert ledger.latest_deliverable(pid)["version"] == 2
+
+
+def test_failed_judgement_escalates_and_never_loops(config, db, ledger):
+    def judge(spec, call, on_fetch):
+        d = call("get_deliverable")
+        call("submit_verdict", deliverable_id=d["id"], passed=False, reasons="Pricing model not covered")
+
+    sup, runner = make(config, db, {("judge", "judge"): judge})
+    pid = post(ledger)
+    assert sup.run_problem(pid) == "escalated"
+    assert [s.stage for s in runner.calls].count("judge") == 1
+    esc = ledger.list_escalations()
+    assert len(esc) == 1 and "Pricing model" in esc[0]["reason"]
+    assert "Deliverable draft v1" in esc[0]["partial"] and "Verified claims so far" in esc[0]["partial"]
+    assert ledger.list_replies() == []
+
+
+def test_token_cap_stops_between_stages(config, db, ledger):
+    sup, runner = make(config, db, tokens_per_run=400_000)
+    pid = post(ledger, token_cap=1_000_000)
+    assert sup.run_problem(pid) == "escalated"
+    esc = ledger.list_escalations()[0]
+    assert "token cap reached" in esc["reason"]
+    p = ledger.get_problem(pid)
+    assert p["tokens_used"] >= p["token_cap"]
+    # the lead ran, then one batch of readers; nothing after the cap
+    assert {s.role for s in runner.calls} <= {"lead", "reader"}
+
+
+def test_deadline_passed_escalates_before_spawning(config, db, ledger):
+    sup, runner = make(config, db)
+    pid = post(ledger, deadline="2999-01-01T00:00:00+00:00")
+    ledger.conn.execute("UPDATE problems SET deadline='2000-01-01T00:00:00+00:00' WHERE id=?", (pid,))
+    assert sup.run_problem(pid) == "escalated"
+    assert runner.calls == []
+    assert "deadline passed" in ledger.list_escalations()[0]["reason"]
+
+
+def test_weekly_cap_blocks_daemon(config, db, ledger):
+    config.weekly_token_cap = 100
+    sup, runner = make(config, db)
+    pid = post(ledger)
+    ledger.conn.execute("INSERT INTO runs(id, problem_id, role, model, status, started_at, total_tokens) VALUES ('r_old', ?, 'lead', 'opus', 'ok', ?, 500)",
+                        (pid, datetime.now(timezone.utc).isoformat()))
+    sup.daemon(once=True)
+    assert runner.calls == [] and ledger.get_problem(pid)["status"] == "queued"
+
+
+def test_rate_limit_pauses_and_resumes_at_recorded_stage(config, db, ledger):
+    hits = {"n": 0}
+
+    def flaky_verify(spec, call, on_fetch):
+        hits["n"] += 1
+        if hits["n"] == 1:
+            return RunResult(status="rate_limited", error="You have hit your usage limit")
+        for n in call("list_notes", status="unverified"):
+            call("verify_note", note_id=n["id"], verified=True, reason="ok")
+
+    sup, runner = make(config, db, {("critic", "verify"): flaky_verify})
+    pid = post(ledger)
+    assert sup.run_problem(pid) == "queued"
+    p = ledger.get_problem(pid)
+    assert p["status"] == "queued" and p["stage"] == "read" and p["not_before"] > p["created_at"]
+    calls_before = len(runner.calls)
+    assert sup.run_problem(pid) == "passed"
+    later = [(s.role, s.stage) for s in runner.calls[calls_before:]]
+    assert ("lead", "plan") not in later and ("reader", "read") not in later  # no re-spend
+    assert later[0] == ("critic", "verify")
+
+
+def test_reader_crash_reopens_once_then_escalates_task(config, db, ledger):
+    seen = {}
+
+    def crashy_reader(spec, call, on_fetch):
+        t = call("get_task")
+        if "Pricing" in t["title"]:
+            seen[spec.run_id] = t["task_id"]
+            return RunResult(status="timeout", error="killed")
+        call("post_note", claim=f"{t['title']}: fact", url="https://e.example/x", quote="fact", source_date="2026-01-01", claim_type="other")
+        call("finish_task", summary="ok")
+
+    def synth(spec, call, on_fetch):
+        tasks = call("list_tasks")
+        unanswered = [t["title"] for t in tasks if t["status"] == "escalated"]
+        claims = call("list_claims")
+        call("submit_deliverable", body="\n".join(f"- {c['claim']} [{c['id']}]" for c in claims), unanswered=unanswered, disagreements="")
+
+    sup, runner = make(config, db, {("reader", "read"): crashy_reader, ("synthesizer", "synthesize"): synth})
+    pid = post(ledger)
+    assert sup.run_problem(pid) == "passed"
+    pricing = [t for t in ledger.list_tasks(pid) if "Pricing" in t["title"]][0]
+    assert pricing["status"] == "escalated" and pricing["lease_count"] == 2
+    assert len(seen) == 2
+    assert ledger.latest_deliverable(pid)["unanswered"] == ["Pricing model"]
+    assert "Unanswered must-answer items" in ledger.list_replies()[0]["body"]
+
+
+def test_plan_fallback_when_lead_posts_nothing(config, db, ledger):
+    sup, runner = make(config, db, {("lead", "plan"): lambda spec, call, on_fetch: (call("get_problem"), None)[1]})
+    pid = post(ledger)
+    assert sup.run_problem(pid) == "passed"
+    tasks = ledger.list_tasks(pid)
+    assert [t["title"] for t in tasks] == ["Vendors", "Pricing model", "Named customers"]
+    assert any(e["kind"] == "plan_fallback" for e in ledger.events(pid))
+
+
+def test_unverified_notes_are_dropped_not_trusted(config, db, ledger):
+    sup, runner = make(config, db, {("critic", "verify"): lambda spec, call, on_fetch: None})
+    pid = post(ledger)
+    assert sup.run_problem(pid) == "escalated"
+    assert "no note survived verification" in ledger.list_escalations()[0]["reason"]
+    assert all(n["status"] == "rejected" for n in ledger.list_notes(pid))
+
+
+def test_ideas_mode_blind_divergence_premortem_repair(config, db, ledger):
+    sup, runner = make(config, db)
+    pid = post(ledger, mode="ideas")
+    assert sup.run_problem(pid) == "passed"
+    stages = [(s.role, s.stage) for s in runner.calls]
+    assert stages[:3] == [("thinker", "diverge")] * 3
+    assert stages[3] == ("critic", "premortem")
+    assert stages[4:7] == [("thinker", "repair")] * 3
+    assert stages[7:] == [("synthesizer", "synthesize"), ("judge", "judge")]
+    opts = ledger.list_options(pid)
+    assert len(opts) == 6 and all(o["premortem"] for o in opts)
+    assert sum(o["status"] == "withdrawn" for o in opts) == 3 and sum(o["status"] == "repaired" for o in opts) == 3
+    assert "Ranked options" in ledger.list_replies()[0]["body"]
+
+
+def test_concurrency_never_exceeds_three(config, db, ledger):
+    import threading
+    import time
+
+    live = {"n": 0, "max": 0}
+    lock = threading.Lock()
+
+    def slow_reader(spec, call, on_fetch):
+        with lock:
+            live["n"] += 1
+            live["max"] = max(live["max"], live["n"])
+        time.sleep(0.05)
+        t = call("get_task")
+        call("post_note", claim=f"{t['title']} fact", url="https://e.example/", quote="q", source_date=None, claim_type="other")
+        call("finish_task", summary="ok")
+        with lock:
+            live["n"] -= 1
+
+    sup, runner = make(config, db, {("reader", "read"): slow_reader})
+    pid = post(ledger, must_answer=["a", "b", "c", "d", "e", "f", "g"])
+    assert sup.run_problem(pid) == "passed"
+    assert live["max"] <= 3 and [s.role for s in runner.calls].count("reader") == 7
+
+
+def test_recover_marks_dead_runs_and_requeues(config, db, ledger):
+    sup, runner = make(config, db)
+    pid = post(ledger)
+    ledger.set_status(pid, "working", stage="plan")
+    tid = ledger.create_task(pid, title="a", criteria="c", budget_tokens=10, merge_owner="lead")
+    rid = ledger.start_run(pid, role="reader", model="haiku", task_id=tid)
+    ledger.lease_task(tid, rid)
+    sup.recover()
+    assert ledger.get_task(tid)["status"] == "open"
+    assert ledger.list_runs(pid)[0]["status"] == "error"
+    assert ledger.get_problem(pid)["status"] == "queued"
+
+
+def test_run_window(config, db):
+    sup, _ = make(config, db)
+    config.run_window = "22:00-07:00"
+    assert sup.in_run_window(datetime(2026, 1, 1, 23, 0))
+    assert sup.in_run_window(datetime(2026, 1, 1, 3, 0))
+    assert not sup.in_run_window(datetime(2026, 1, 1, 12, 0))
+    config.run_window = "09:00-17:00"
+    assert sup.in_run_window(datetime(2026, 1, 1, 12, 0)) and not sup.in_run_window(datetime(2026, 1, 1, 3, 0))

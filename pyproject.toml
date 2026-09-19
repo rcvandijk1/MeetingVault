@@ -1,0 +1,22 @@
+[project]
+name = "thinktank"
+version = "0.1.0"
+description = "Research Think Tank: a deterministic supervisor that spawns ephemeral Claude Code agents per research problem."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+thinktank = "thinktank.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["thinktank*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

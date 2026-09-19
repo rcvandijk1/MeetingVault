@@ -1,0 +1,43 @@
+# Copy to thinktank.toml (or point THINKTANK_CONFIG at it). Every key is optional.
+# Environment variables THINKTANK_<KEY> override these, e.g. THINKTANK_RUN_WINDOW="22:00-07:00".
+
+db_path = "thinktank.sqlite3"
+claude_bin = "claude"
+
+# "subscription": runs draw on the logged-in Claude plan (ANTHROPIC_API_KEY is stripped).
+# "api_key": requires ANTHROPIC_API_KEY; set a Console spend limit as the outer guard.
+auth_mode = "subscription"
+
+# Section 6: tiers, not names. Aliases resolve to the latest model in the CLI.
+[models]
+reader = "haiku"
+thinker = "opus"
+critic = "sonnet"
+synthesizer = "opus"
+judge = "sonnet"
+
+# Section 9: caps the supervisor measures itself. Calibrate weekly_token_cap
+# against the usage page after two problems, then monthly.
+# weekly_token_cap = 10000000
+# default_problem_token_cap = 3000000
+# max_usd_per_run = 8.0
+# run_timeout_seconds = 1800
+# max_concurrent_agents = 3
+# idea_thinkers = 3
+
+# Only start problems in your off-hours (local time). Empty = any time.
+# run_window = "22:00-07:00"
+# poll_seconds = 30
+# rate_limit_pause_seconds = 1800
+
+# Board. Loopback by default; bind to your private network address to reach it from a phone.
+# web_host = "127.0.0.1"
+# web_port = 8765
+
+# Section 8 expiry defaults, in days. Historical facts never expire.
+# [claim_expiry_days]
+# price = 182
+# market_size = 182
+# capability = 365
+# company_fact = 730
+# other = 365
