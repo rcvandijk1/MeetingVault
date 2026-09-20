@@ -35,7 +35,7 @@ You --post--> Inbox board --> Supervisor (plain code)
 | `thinktank/web.py` | Minimal board over SQLite: inbox with post form and spend panel, problem detail with the conversation feed and agent index, replies, escalations, claim lookup. |
 | `thinktank/cli.py` | `init`, `post`, `daemon`, `run`, `web`, `status`, `purge`. |
 | `docs/baseline-template.md` | Phase 0: measure the built-in Research feature before trusting this. |
-| `tests/` | 42 tests with a fake runner that plays every role through the same tools a real agent uses, and a fake web. |
+| `tests/` | 68 tests with a fake runner that plays every role through the same tools a real agent uses, and a fake web. |
 
 ## Quick start
 
@@ -61,7 +61,11 @@ The supervisor needs a `claude` login on the box (subscription mode) or
 
 ## What a problem goes through
 
-Research: `plan` (lead splits the must-answer list into subtasks) → `read`
+Research: `plan` (lead splits the must-answer list into subtasks) →
+`plan_review` (the critic attacks the plan before any reader spends a
+token: uncovered items, unanswerable or overlapping subtasks, hypotheses
+nobody will test; the lead gets one revision round to add or cancel
+subtasks) → `read`
 (readers, one sub-question each, blind to each other, up to 3 at once) →
 `verify` (two passes: the supervisor fetches every cited URL itself and
 substring-matches the quote, rejecting notes whose quote is not on the
@@ -77,6 +81,25 @@ one per option) → `repair` (each author, one round: repair or withdraw) →
 `synthesize` (rank survivors, disagreements recorded as is) → `judge` → `close`.
 
 A failed judgement escalates. It never loops back.
+
+## Hypotheses
+
+A post may carry up to five hypotheses: your own proposed answers. They
+are in every agent's brief as things to test, not confirm. Readers look
+for evidence against them, the synthesizer gives each a verdict
+(supported, contradicted, undetermined) with claim ids, the critic objects
+to a verdict the claims do not justify, and the judge fails a deliverable
+that leaves a hypothesis without a verdict.
+
+## Models per role
+
+Lead and synthesizer run on Fable, the top tier, because planning and
+writing are where judgement compounds and each runs once per problem.
+Readers run on Haiku because reading is volume. The critic runs on Sonnet
+for verification and on Opus for ideas-mode premortems. Every role has a
+fallback model the CLI switches to when the primary is unavailable or
+refuses, and an effort level. All of it is config: `models`,
+`models_ideas`, `fallback_models`, `effort`, `effort_ideas`.
 
 ## Agents talk: the message board
 

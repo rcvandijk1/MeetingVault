@@ -12,12 +12,38 @@ claude_bin = "claude"
 auth_mode = "subscription"
 
 # Section 6: tiers, not names. Aliases resolve to the latest model in the CLI.
+# Planning (thinker/lead) and writing (synthesizer) get the top model; reading
+# is volume and stays cheap; verification is mechanical judgement and stays mid.
+# Fable costs twice Opus per token; the lead and synthesizer run once per problem.
 [models]
 reader = "haiku"
-thinker = "opus"
+thinker = "fable"
 critic = "sonnet"
-synthesizer = "opus"
+synthesizer = "fable"
 judge = "sonnet"
+
+# Ideas mode overrides: the premortem is judgement, not checking.
+[models_ideas]
+critic = "opus"
+
+# If the primary model is unavailable or refuses, the CLI continues on this one.
+[fallback_models]
+thinker = "opus"
+synthesizer = "opus"
+critic = "opus"
+reader = "sonnet"
+judge = "opus"
+
+# How hard each role thinks: low | medium | high | xhigh | max. Empty = CLI default.
+[effort]
+reader = "medium"
+thinker = "high"
+critic = "medium"
+synthesizer = "high"
+judge = "medium"
+
+[effort_ideas]
+critic = "high"
 
 # Section 9: no hard limit on subscription spend. The board shows 7-day and
 # 30-day API-equivalent spend against this figure (the plan's monthly price).

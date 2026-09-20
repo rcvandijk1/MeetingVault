@@ -128,8 +128,9 @@ def test_token_cap_stops_between_stages(config, db, ledger):
     assert "token cap reached" in esc["reason"]
     p = ledger.get_problem(pid)
     assert p["tokens_used"] >= p["token_cap"]
-    # the lead ran, then one batch of readers; nothing after the cap
-    assert {s.role for s in runner.calls} <= {"lead", "reader"}
+    # the lead planned, the critic reviewed, one batch of readers ran; nothing after the cap
+    assert {s.role for s in runner.calls} <= {"lead", "critic", "reader"}
+    assert "synthesizer" not in {s.role for s in runner.calls}
 
 
 def test_deadline_passed_escalates_before_spawning(config, db, ledger):

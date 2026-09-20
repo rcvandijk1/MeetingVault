@@ -53,8 +53,16 @@ def test_addressed_and_topic_routing(ledger, config):
     assert len(m["recipients"]) == config.max_topic_matches and "r2" not in m["recipients"]
     assert set(m["recipients"]) <= {"r1", "r3", "r4"}  # the lead has "pricing" too but is addressable only
     # no match is recorded, not an error
-    m = ledger.post_message(pid, from_agent=r1, kind="finding", body="nothing overlaps", topics=["zzz"])
+    m = ledger.post_message(pid, from_agent=r1, kind="finding", body="nothing overlaps", topics=["zzzz"])
     assert m["recipients"] == [] and "no match" in m["routing"]
+    # ...but a message that found nobody waits for someone to register the topic
+    late = ledger.born(pid, role="reader", name="r5", session_id="s", workdir="w", model="m")
+    ledger.register_self(late, topics=["zzzz stuff"], brief="late")
+    assert {"agent_id": late, "count": 1} in ledger.pending_pickups(pid)
+    assert "later to r5" in ledger.thread_messages(m["thread_id"])[0]["routing"]
+    lead_late = ledger.born(pid, role="lead", name="lead2", session_id="s", workdir="w", model="m")
+    ledger.register_self(lead_late, topics=["zzzz"], brief="lead")  # the lead never gets topic mail, even late
+    assert not any(p["agent_id"] == lead_late for p in ledger.pending_pickups(pid))
     # rules
     with pytest.raises(LedgerError, match="address the message"):
         ledger.post_message(pid, from_agent=r1, kind="finding", body="x")
@@ -73,7 +81,7 @@ def test_addressed_and_topic_routing(ledger, config):
         ledger.post_message(pid, from_agent=synth, kind="finding", body="x", to_agent="lead")
     # pickups
     pend = {p["agent_id"]: p["count"] for p in ledger.pending_pickups(pid)}
-    assert pend[lead] == 1 and sum(pend.values()) == 3
+    assert pend[lead] == 1 and pend[late] == 1 and sum(pend.values()) == 4
 
 
 def test_board_closed_outside_working_stages(ledger):
@@ -225,7 +233,8 @@ def test_critic_objection_wakes_reader_who_posts_a_better_note(config, db, ledge
     assert sup.run_problem(pid) == "passed"
     assert state["critic_runs"] == 2
     critic_runs = [s for s in runner.calls if s.role == "critic" and s.stage == "verify"]
-    assert [s.resume for s in critic_runs] == [False, True]  # same critic, woken for round 2
+    assert [s.resume for s in critic_runs] == [True, True]  # the critic born at plan review, woken for both rounds
+    assert len({s.session_id for s in runner.calls if s.role == "critic"}) == 1
     claims = {c["claim"] for c in ledger.claims_for_problem(pid)}
     assert "Pricing model: better fact" in claims and "Pricing model: fact one" not in claims
     th = ledger.list_threads(pid)[0]
@@ -252,7 +261,7 @@ def test_ping_pong_stops_when_the_thread_budget_is_spent(config, db, ledger):
     assert sup.run_problem(pid) == "passed"
     th = ledger.list_threads(pid)[0]
     assert th["status"] == "closed" and "budget spent" in th["closed_reason"]
-    wakes = [s for s in runner.calls if s.resume]
+    wakes = [s for s in runner.calls if s.stage == "wake"]
     assert 2 <= len(wakes) <= 4
     assert ledger.pending_pickups(pid) == []
 
@@ -305,17 +314,17 @@ def test_rate_limited_first_run_respawns_instead_of_resuming(config, db, ledger)
         hits["n"] += 1
         if hits["n"] == 1:
             return RunResult(status="rate_limited", error="usage limit reached")
-        for n in call("list_notes", status="unverified"):
-            call("verify_note", note_id=n["id"], verified=True, reason="ok")
+        call("review_plan", body="stands", objections=[])
 
-    sup, runner = make(config, db, {("critic", "verify"): flaky})
+    sup, runner = make(config, db, {("critic", "plan_review"): flaky})
     pid = post(ledger)
     assert sup.run_problem(pid) == "queued"
     assert sup.run_problem(pid) == "passed"
-    critic_runs = [s for s in runner.calls if s.role == "critic" and s.stage == "verify"]
-    assert [s.resume for s in critic_runs] == [False, False]
+    critic_runs = [s for s in runner.calls if s.role == "critic" and s.stage == "plan_review"]
+    assert [s.resume for s in critic_runs] == [False, False]  # no session was established, so spawn again
     assert len({s.session_id for s in critic_runs}) == 1
     assert len([a for a in ledger.list_agents(pid, alive_only=False) if a["role"] == "critic"]) == 1
+    assert [s.resume for s in runner.calls if s.role == "critic" and s.stage == "verify"] == [True]
 
 
 def test_retire_deletes_agents_with_the_problem(config, db, ledger, tmp_path):

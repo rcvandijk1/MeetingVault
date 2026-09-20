@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
                 mode=data.get("mode", ""), question=data.get("question", ""), decision=data.get("decision", ""),
                 must_answer=data.get("must_answer", []), evidence_standard=data.get("evidence_standard", ""),
                 deliverable=data.get("deliverable", ""), token_cap=data.get("token_cap"), deadline=str(data.get("deadline", "")),
-                confidential=bool(data.get("confidential", False)),
+                confidential=bool(data.get("confidential", False)), hypotheses=data.get("hypotheses", []),
             )
         except LedgerError as e:
             print(f"rejected: {e}", file=sys.stderr)

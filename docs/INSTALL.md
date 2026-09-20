@@ -26,7 +26,7 @@ first problems written, all sitting in one folder ready to copy.
    git checkout claude/artifact-build-dw4ib9        # or main once merged
    python3 -m venv .venv && . .venv/bin/activate    # Python 3.11 or newer
    pip install -e ".[dev]"
-   python -m pytest -q                               # expect 61 passed
+   python -m pytest -q                               # expect 68 passed
    ```
 2. **Try the board locally**, so you know what you are looking at on the box:
    ```bash
@@ -53,11 +53,29 @@ first problems written, all sitting in one folder ready to copy.
    web_port = 8765
    [models]
    reader = "haiku"
-   thinker = "opus"
+   thinker = "fable"              # the lead plans on the top tier
    critic = "sonnet"
-   synthesizer = "opus"
+   synthesizer = "fable"          # the deliverable is written on the top tier
    judge = "sonnet"
+   [models_ideas]
+   critic = "opus"                # premortems are judgement
+   [fallback_models]
+   thinker = "opus"
+   synthesizer = "opus"
+   critic = "opus"
+   reader = "sonnet"
+   judge = "opus"
+   [effort]
+   reader = "medium"
+   thinker = "high"
+   critic = "medium"
+   synthesizer = "high"
+   judge = "medium"
+   [effort_ideas]
+   critic = "high"
    ```
+   Fable costs twice Opus per token; only the lead and the synthesizer use
+   it, and each runs once per problem plus a few wakes.
 4. **Write the service files** into `deploy/`:
 
    `deploy/nightwatch-daemon.service`
@@ -123,8 +141,11 @@ first problems written, all sitting in one folder ready to copy.
    (`docs/baseline-template.md`): public topics, 3 to 7 must-answer items,
    a deliverable shape, deadline `07:00`. Save them as `deploy/p1.json`,
    `p2.json`, `p3.json` (fields: `mode`, `question`, `decision`,
-   `must_answer`, `evidence_standard`, `deliverable`, `deadline`). Plus one
-   throwaway smoke problem:
+   `must_answer`, `hypotheses` (optional, up to 5: your own proposed
+   answers, which the agents will try to disprove), `evidence_standard`,
+   `deliverable`, `deadline`). Write a hypothesis for at least one of the
+   three; a problem where you already suspect the answer is exactly where
+   the system earns its keep. Plus one throwaway smoke problem:
    ```json
    {"mode":"research","question":"Which public broadcasters in the Netherlands publish their annual report online?","decision":"smoke test only","must_answer":["Broadcasters","Report URLs","Publication year"],"evidence_standard":"Primary sources, the broadcaster's own site","deliverable":"one-page list","deadline":"23:59"}
    ```
@@ -187,8 +208,12 @@ Plug the keyboard, mouse and monitor in for steps 1 to 4 only.
    set -a; . /etc/nightwatch.env; set +a
    claude -p "Reply with the single word OK" --model haiku --tools "" --output-format json | python3 -c "import json,sys;d=json.load(sys.stdin);print(d['result'],d['total_cost_usd'])"
    ```
-   Expect `OK` and a cost below a cent. Never put an `ANTHROPIC_API_KEY`
-   on this box.
+   Expect `OK` and a cost below a cent. Then the same with
+   `--model fable --fallback-model opus --effort low`: the JSON's
+   `modelUsage` should name `claude-fable-5-1`. If it names only an Opus
+   model, your plan does not serve Fable headless and the fallback did its
+   job; set `thinker` and `synthesizer` to `opus` in the config and carry
+   on. Never put an `ANTHROPIC_API_KEY` on this box.
 6. **Copy the build.** From the laptop:
    ```bash
    scp -r nightwatch nightwatch:~/nightwatch     # or git clone on the box and scp only deploy/
@@ -196,7 +221,7 @@ Plug the keyboard, mouse and monitor in for steps 1 to 4 only.
    On the box:
    ```bash
    cd ~/nightwatch && python3 -m venv .venv && . .venv/bin/activate && pip install -e ".[dev]"
-   python -m pytest -q                            # 61 passed, on the box this time
+   python -m pytest -q                            # 68 passed, on the box this time
    cp deploy/thinktank.toml thinktank.toml && mkdir -p data && thinktank init
    sudo cp deploy/nightwatch-*.service deploy/nightwatch-backup.timer /etc/systemd/system/
    sudo systemctl daemon-reload
@@ -210,9 +235,10 @@ Plug the keyboard, mouse and monitor in for steps 1 to 4 only.
    THINKTANK_MAX_USD_PER_RUN=1.0 thinktank run <problem id>
    ```
    Meanwhile, on the laptop, open `http://192.168.1.50:8765/replies`, pin
-   the tab, and watch the problem page: readers in the agent index, the
-   fetch log filling, notes getting `quote_check` pass or fail, the critic
-   verifying, any messages in the feed. When it finishes the tab reads
+   the tab, and watch the problem page: the lead's plan, the critic's plan
+   review under it, readers in the agent index, the fetch log filling,
+   notes getting `quote_check` pass or fail, the critic verifying, any
+   messages in the feed. When it finishes the tab reads
    `(1) Nightwatch`; open the reply and it clears.
 
    If every URL shows `fetch failed`, outbound HTTPS from the box is

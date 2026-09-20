@@ -15,7 +15,7 @@ def test_role_scoping(ledger):
     result, err = call_tool(ledger, judge, "get_problem", {})
     assert err  # the judge sees the brief only
     result, err = call_tool(ledger, judge, "get_brief", {})
-    assert not err and set(result) == {"mode", "question", "decision", "must_answer", "evidence_standard", "deliverable"}
+    assert not err and set(result) == {"mode", "question", "decision", "must_answer", "hypotheses", "evidence_standard", "deliverable"}
     names = {t.name for t in tools_for_role("reader")}
     assert names == {"get_task", "search_claims", "post_note", "finish_task", "register_self", "list_agents", "post_message", "read_inbox", "get_thread"}
     assert {t.name for t in tools_for_role("judge")} == {"get_brief", "get_deliverable", "submit_verdict"}

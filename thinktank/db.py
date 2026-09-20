@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS problems (
   question TEXT NOT NULL,
   decision TEXT NOT NULL,
   must_answer TEXT NOT NULL,          -- JSON list of strings
+  hypotheses TEXT NOT NULL DEFAULT '[]',   -- JSON list: the poster's own proposed answers, to be attacked
   evidence_standard TEXT NOT NULL,
   deliverable TEXT NOT NULL,
   token_cap INTEGER NOT NULL,
@@ -44,7 +45,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   criteria TEXT NOT NULL,
   budget_tokens INTEGER NOT NULL,
   merge_owner TEXT NOT NULL,          -- run id or role that owns the merge
-  status TEXT NOT NULL,               -- open|leased|done|escalated
+  status TEXT NOT NULL,               -- open|leased|done|escalated|cancelled
   owner_run_id TEXT,
   lease_expires_at TEXT,
   lease_count INTEGER NOT NULL DEFAULT 0,
@@ -114,11 +115,11 @@ CREATE TABLE IF NOT EXISTS options (
 CREATE TABLE IF NOT EXISTS critiques (
   id TEXT PRIMARY KEY,
   problem_id TEXT NOT NULL REFERENCES problems(id),
-  target_kind TEXT NOT NULL,          -- deliverable | option
+  target_kind TEXT NOT NULL,          -- plan | deliverable | option
   target_id TEXT NOT NULL,
   round INTEGER NOT NULL,
   body TEXT NOT NULL,
-  objections TEXT NOT NULL DEFAULT '[]',   -- JSON list of {claim_id|item, objection}
+  objections TEXT NOT NULL DEFAULT '[]',   -- JSON list of {claim_id|must_answer_item|hypothesis|task_id, objection}
   run_id TEXT,
   created_at TEXT NOT NULL
 );
@@ -305,6 +306,7 @@ MIGRATIONS = [
     ("problems", "stage_now", "TEXT"),  # the stage currently running; `stage` is the last completed
     ("runs", "agent_id", "TEXT"),
     ("replies", "seen_at", "TEXT"),
+    ("problems", "hypotheses", "TEXT NOT NULL DEFAULT '[]'"),  # JSON list: the poster's own proposed answers, to be attacked
 ]
 
 

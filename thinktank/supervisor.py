@@ -215,8 +215,9 @@ class Supervisor:
         while name in taken:
             name = f"{base}-{n}"
             n += 1
+        mode = L.get_problem(pid)["mode"]
         aid = L.born(pid, role=role, name=name, session_id=str(uuid.uuid4()), workdir=self._workdir(pid, name),
-                     model=self.config.model_for(role), task_id=task_id, slot=slot, topics=topics)
+                     model=self.config.model_for(role, mode), task_id=task_id, slot=slot, topics=topics)
         return L.get_agent(aid)
 
     def _agent(self, L: Ledger, pid: str, role: str, *, name: str | None = None, task_id: str | None = None,
@@ -255,6 +256,7 @@ class Supervisor:
             builtin_tools=BUILTIN_TOOLS[tools_key or agent["role"]], task_id=agent["task_id"], slot=agent["slot"], round_no=round_no,
             max_usd=self.governor.run_max_usd(p, agent["model"], slice_tokens), timeout_seconds=self.config.run_timeout_seconds,
             agent_id=agent["id"], session_id=agent["session_id"], resume=False, workdir=agent["workdir"],
+            fallback_model=self.config.fallback_for(agent["role"], p["mode"]), effort=self.config.effort_for(agent["role"], p["mode"]),
         )
         return self._execute(L, agent, spec, wake=False)
 
@@ -269,17 +271,19 @@ class Supervisor:
             slot=agent["slot"], round_no=round_no,
             max_usd=self.governor.run_max_usd(p, agent["model"], slice_tokens), timeout_seconds=self.config.run_timeout_seconds,
             agent_id=agent["id"], session_id=agent["session_id"], resume=True, workdir=agent["workdir"],
+            fallback_model=self.config.fallback_for(agent["role"], p["mode"]), effort=self.config.effort_for(agent["role"], p["mode"]),
         )
         return self._execute(L, agent, spec, wake=True)
 
     def _ephemeral(self, L: Ledger, pid: str, *, role: str, stage: str, system_prompt: str, extra: dict | None = None) -> tuple[str, RunResult]:
         """A run with no identity and no session: the judge."""
         p = L.get_problem(pid)
-        model = self.config.model_for(role)
+        model = self.config.model_for(role, p["mode"])
         run_id = L.start_run(pid, role=role, model=model)
         spec = RunSpec(role=role, stage=stage, problem_id=pid, run_id=run_id, model=model, system_prompt=system_prompt,
                        user_prompt=prompts.user_prompt(role, stage, p, extra), builtin_tools=BUILTIN_TOOLS[role],
-                       max_usd=self.governor.run_max_usd(p, model), timeout_seconds=self.config.run_timeout_seconds)
+                       max_usd=self.governor.run_max_usd(p, model), timeout_seconds=self.config.run_timeout_seconds,
+                       fallback_model=self.config.fallback_for(role, p["mode"]), effort=self.config.effort_for(role, p["mode"]))
         res = self.runner.run(spec, on_fetch=lambda kind, url: L.log_fetch(run_id, pid, role, kind, url))
         L.finish_run(run_id, status=res.status, usage=res.usage, session_id=res.session_id, error=res.error)
         if res.status == "rate_limited":
@@ -410,6 +414,36 @@ class Supervisor:
                               budget_tokens=slice_tokens, merge_owner=lead["id"])
             L.event(pid, "plan_fallback", f"lead produced no subtasks; created {len(items)} from the must-answer list")
 
+    def stage_plan_review(self, pid: str) -> None:
+        """The critic attacks the plan before a reader spends a token; the
+        lead gets one revision round. One cheap run can save a night."""
+        L = self.ledger
+        if L.list_critiques(pid, "plan"):
+            return
+        p = L.get_problem(pid)
+        critic, is_new = self._agent(L, pid, "critic", name="critic", topics=["verification", "critique"] + _seed_topics(p["question"]))
+        if is_new:
+            self._spawn(L, critic, stage="plan_review", system_prompt=prompts.CRITIC, extra={"Instructions": prompts.CRITIC_PLAN_REVIEW}, tools_key="critic")
+        else:
+            self._wake(L, critic, stage="plan_review", tools_key="critic", prompt=prompts.CRITIC_PLAN_REVIEW)
+        reviews = L.list_critiques(pid, "plan")
+        if not reviews:
+            L.event(pid, "plan_review_missing", "critic posted no review; plan stands")
+            return
+        objections = reviews[0]["objections"]
+        if not objections:
+            L.event(pid, "plan_review_ok", "plan stands")
+            return
+        self._guard(pid)
+        lead, is_new = self._agent(L, pid, "lead", name="lead")
+        if is_new:
+            self._spawn(L, lead, stage="plan_revise", system_prompt=prompts.LEAD, extra={"Instructions": prompts.LEAD_REVISE})
+        else:
+            self._wake(L, lead, stage="plan_revise", tools_key="lead", prompt=prompts.LEAD_REVISE)
+        L.event(pid, "plan_revised", f"after {len(objections)} objections: {len(L.list_tasks(pid, 'open'))} open subtasks")
+        if not L.list_tasks(pid, "open"):
+            raise Stop("the plan has no open subtasks after the review")
+
     def stage_read(self, pid: str) -> None:
         L = self.ledger
         self._pump(pid, stage="read", dispatch_readers=True)
@@ -418,7 +452,7 @@ class Supervisor:
         for t in tasks:
             if t["id"] in parents and t["status"] == "open":
                 children = [c for c in tasks if c["parent_id"] == t["id"]]
-                if all(c["status"] in ("done", "escalated") for c in children):
+                if all(c["status"] in ("done", "escalated", "cancelled") for c in children):
                     L.finish_task(t["id"], f"merged from {len(children)} subtasks")
         if not L.list_notes(pid):
             raise Stop("no reader produced a single note")
@@ -431,18 +465,19 @@ class Supervisor:
         new notes go through (a) and a second critic run."""
         L = self.ledger
         p = L.get_problem(pid)
-        critic, is_new = self._agent(L, pid, "critic", name="critic", topics=["verification"] + _seed_topics(p["question"]))
+        critic, is_new = self._agent(L, pid, "critic", name="critic", topics=["verification", "critique"] + _seed_topics(p["question"]))
         for round_no in (1, 2):
             self.check_quotes(pid)
             if not L.list_notes(pid, status="unverified", quote_checked=True):
                 break
             self._guard(pid)
             if is_new:
-                self._spawn(L, critic, stage="verify", system_prompt=prompts.CRITIC_VERIFY, tools_key="critic_verify", round_no=round_no)
+                self._spawn(L, critic, stage="verify", system_prompt=prompts.CRITIC, extra={"Instructions": prompts.CRITIC_VERIFY},
+                            tools_key="critic_verify", round_no=round_no)
                 is_new = False
             else:
                 self._wake(L, critic, stage="verify", tools_key="critic_verify", round_no=round_no,
-                           prompt=f"New notes await verification (round {round_no}). Call list_notes with status unverified and verify each as before. {prompts.WAKE}")
+                           prompt=f"Round {round_no}. {prompts.CRITIC_VERIFY}")
             # Readers the critic objected to get a chance to find a better source.
             self._pump(pid, stage="verify", dispatch_readers=True)
         for n in L.list_notes(pid, status="unverified"):
@@ -494,7 +529,7 @@ class Supervisor:
             return
         critic, is_new = self._agent(L, pid, "critic", name="critic")
         if is_new:
-            self._spawn(L, critic, stage="critique", system_prompt=prompts.CRITIC_DELIVERABLE, round_no=2)
+            self._spawn(L, critic, stage="critique", system_prompt=prompts.CRITIC, extra={"Instructions": prompts.CRITIC_DELIVERABLE}, round_no=2)
         else:
             self._wake(L, critic, stage="critique", tools_key="critic", round_no=2, prompt=prompts.CRITIC_DELIVERABLE)
         if not L.list_critiques(pid, "deliverable"):
@@ -563,9 +598,9 @@ class Supervisor:
         L = self.ledger
         p = L.get_problem(pid)
         if not all(o["premortem"] for o in L.list_options(pid, include_withdrawn=False)):
-            critic, is_new = self._agent(L, pid, "critic", name="critic", topics=["premortem"] + _seed_topics(p["question"]))
+            critic, is_new = self._agent(L, pid, "critic", name="critic", topics=["premortem", "critique"] + _seed_topics(p["question"]))
             if is_new:
-                self._spawn(L, critic, stage="premortem", system_prompt=prompts.CRITIC_PREMORTEM, round_no=1)
+                self._spawn(L, critic, stage="premortem", system_prompt=prompts.CRITIC, extra={"Instructions": prompts.CRITIC_PREMORTEM}, round_no=1)
             else:
                 self._wake(L, critic, stage="premortem", tools_key="critic", prompt=f"New options await a premortem. {prompts.CRITIC_PREMORTEM}")
         for o in L.list_options(pid, include_withdrawn=False):
@@ -657,6 +692,8 @@ class Supervisor:
         lines = [f"# {p['question']}", "",
                  f"{self.config.system_name} · {p['mode']} · Deliverable v{d['version']} · Tokens: {self._tokens_line(p)} · "
                  f"API-equivalent cost: ${self._cost(p):.2f}", ""]
+        if p["hypotheses"]:
+            lines += ["## Hypotheses tested", *[f"- H{i + 1}. {h}" for i, h in enumerate(p["hypotheses"])], "(verdicts are in the deliverable)", ""]
         if d["unanswered"]:
             lines += ["## Unanswered must-answer items", *[f"- {u}" for u in d["unanswered"]], ""]
         if d["disagreements"]:
@@ -692,13 +729,14 @@ class Supervisor:
 
 
 STATUS_FOR_STAGE = {
-    "plan": "planning", "read": "working", "verify": "critiquing", "synthesize": "synthesizing", "critique": "critiquing",
+    "plan": "planning", "plan_review": "planning", "read": "working", "verify": "critiquing", "synthesize": "synthesizing", "critique": "critiquing",
     "revise": "synthesizing", "judge": "judging", "close": "judging",
     "diverge": "working", "premortem": "critiquing", "repair": "working",
 }
 
 RESEARCH_STAGES = [
     ("plan", Supervisor.stage_plan),
+    ("plan_review", Supervisor.stage_plan_review),
     ("read", Supervisor.stage_read),
     ("verify", Supervisor.stage_verify),
     ("synthesize", Supervisor.stage_synthesize),

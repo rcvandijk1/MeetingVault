@@ -54,6 +54,9 @@ class RunSpec:
     session_id: str | None = None
     resume: bool = False
     workdir: str | None = None
+    # Model fallback when the primary is unavailable or refuses; effort level.
+    fallback_model: str | None = None
+    effort: str | None = None
 
 
 @dataclass
@@ -112,6 +115,10 @@ class ClaudeCodeRunner:
             "--permission-prompts", "none",
             "--disable-slash-commands",
         ]
+        if spec.fallback_model:
+            cmd += ["--fallback-model", spec.fallback_model]
+        if spec.effort:
+            cmd += ["--effort", spec.effort]
         if spec.system_prompt:
             cmd += ["--system-prompt", spec.system_prompt]
         # On a resume the CLI reuses the session's recorded system prompt.

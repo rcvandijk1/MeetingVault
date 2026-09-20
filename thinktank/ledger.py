@@ -25,7 +25,7 @@ MESSAGE_KINDS = ("question", "finding", "objection", "request", "answer")
 # Stages in which the board is open: the working stages, where the
 # supervisor wakes recipients. Divergence in ideas mode stays blind; from
 # synthesis on, threads are read (by synthesizer and critic) but not written.
-MESSAGING_STAGES = {"plan", "read", "verify", "premortem", "repair"}
+MESSAGING_STAGES = {"plan", "plan_review", "read", "verify", "premortem", "repair"}
 # Which roles may address which roles. Judge and synthesizer never send or receive.
 MAY_MESSAGE = {
     "reader": {"reader", "lead", "critic"},
@@ -152,6 +152,7 @@ class Ledger:
         token_cap: int | None,
         deadline: str,
         confidential: bool = False,
+        hypotheses: list[str] | None = None,
     ) -> str:
         """Post to the inbox board. Missing fields are rejected here, before
         any agent is spawned (section 4)."""
@@ -180,15 +181,18 @@ class Ledger:
             deadline_iso = ""
         if confidential:
             problems.append("post is flagged confidential; only public topics are accepted")
+        hyps = [h.strip() for h in (hypotheses or []) if h and h.strip()]
+        if len(hyps) > 5:
+            problems.append("at most 5 hypotheses")
         if problems:
             raise LedgerError("; ".join(problems))
         pid = new_id("p")
         ts = now_iso()
         self.conn.execute(
-            """INSERT INTO problems(id, mode, question, decision, must_answer, evidence_standard,
+            """INSERT INTO problems(id, mode, question, decision, must_answer, hypotheses, evidence_standard,
                deliverable, token_cap, deadline, confidential, status, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (pid, mode, question.strip(), decision.strip(), json.dumps(items), evidence_standard.strip(),
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (pid, mode, question.strip(), decision.strip(), json.dumps(items), json.dumps(hyps), evidence_standard.strip(),
              deliverable.strip(), cap, deadline_iso, 0, "posted", ts, ts),
         )
         self.event(pid, "posted", f"{mode}: {question.strip()[:200]}")
@@ -198,8 +202,13 @@ class Ledger:
         row = self._one("SELECT * FROM problems WHERE id=?", pid)
         if not row:
             raise LedgerError(f"unknown problem {pid}")
+        return self._problem_dict(row)
+
+    @staticmethod
+    def _problem_dict(row: sqlite3.Row) -> dict:
         d = dict(row)
         d["must_answer"] = json.loads(d["must_answer"])
+        d["hypotheses"] = json.loads(d.get("hypotheses") or "[]")
         return d
 
     def list_problems(self, status: str | None = None) -> list[dict]:
@@ -207,12 +216,7 @@ class Ledger:
             rows = self._all("SELECT * FROM problems WHERE status=? ORDER BY created_at", status)
         else:
             rows = self._all("SELECT * FROM problems ORDER BY created_at DESC")
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["must_answer"] = json.loads(d["must_answer"])
-            out.append(d)
-        return out
+        return [self._problem_dict(r) for r in rows]
 
     def set_status(self, pid: str, status: str, stage: str | None = None, error: str | None = None) -> None:
         closed = now_iso() if status in ("passed", "escalated", "rejected") else None
@@ -231,7 +235,7 @@ class Ledger:
         """What the judge sees: question, must-answer list, evidence standard,
         deliverable spec. Nothing else (section 6)."""
         p = self.get_problem(pid)
-        return {k: p[k] for k in ("mode", "question", "decision", "must_answer", "evidence_standard", "deliverable")}
+        return {k: p[k] for k in ("mode", "question", "decision", "must_answer", "hypotheses", "evidence_standard", "deliverable")}
 
     # ------------------------------------------------------------ tasks
     def create_task(
@@ -318,6 +322,21 @@ class Ledger:
             (summary[:2000], int(tokens_used), tid),
         )
         self.event(t["problem_id"], "task_done", f"{tid}: {summary[:200]}")
+
+    def cancel_task(self, tid: str, reason: str, by: str) -> None:
+        """The lead drops a subtask after the plan review. Only an open task
+        with no children and no notes can go; work done is never discarded."""
+        t = self.get_task(tid)
+        if t["status"] != "open":
+            raise LedgerError(f"task {tid} is {t['status']}; only open tasks can be cancelled")
+        if self._one("SELECT 1 FROM tasks WHERE parent_id=? LIMIT 1", tid):
+            raise LedgerError("a task with subtasks cannot be cancelled")
+        if self._one("SELECT 1 FROM notes WHERE task_id=? LIMIT 1", tid):
+            raise LedgerError("a task with notes cannot be cancelled")
+        if not reason.strip():
+            raise LedgerError("a reason is required")
+        self.conn.execute("UPDATE tasks SET status='cancelled', summary=? WHERE id=?", (f"cancelled by {by}: {reason.strip()[:300]}", tid))
+        self.event(t["problem_id"], "task_cancelled", f"{tid}: {reason.strip()[:200]}")
 
     def release_task(self, tid: str, reason: str, tokens_used: int = 0) -> str:
         """A lease expired or the run failed. First time: back to the ledger.
@@ -555,29 +574,55 @@ class Ledger:
         d["unanswered"] = json.loads(d["unanswered"])
         return d
 
+    def _clean_objections(self, pid: str, objections: list[dict], *, allow_tasks: bool) -> list[dict]:
+        """Every objection points at something checkable: a claim id, a
+        must-answer item, a hypothesis, or (for a plan) a task id (section 7)."""
+        p = self.get_problem(pid)
+        clean = []
+        for ob in objections or []:
+            if not isinstance(ob, dict) or not ob.get("objection"):
+                raise LedgerError("each objection needs an 'objection' text")
+            target = ob.get("claim_id") or ob.get("must_answer_item") or ob.get("hypothesis") or (ob.get("task_id") if allow_tasks else None)
+            if not target:
+                raise LedgerError("each objection must point at a claim_id, a must_answer_item, a hypothesis" + (" or a task_id" if allow_tasks else ""))
+            if ob.get("claim_id"):
+                self.get_claim(ob["claim_id"])
+            if ob.get("task_id") and allow_tasks and self.get_task(ob["task_id"])["problem_id"] != pid:
+                raise LedgerError("task belongs to another problem")
+            if ob.get("hypothesis") and ob["hypothesis"] not in p["hypotheses"]:
+                raise LedgerError(f"unknown hypothesis; the post lists: {p['hypotheses']}")
+            clean.append({"claim_id": ob.get("claim_id"), "must_answer_item": ob.get("must_answer_item"), "hypothesis": ob.get("hypothesis"),
+                          "task_id": ob.get("task_id") if allow_tasks else None, "objection": str(ob["objection"])[:1000]})
+        return clean
+
     def post_critique(self, pid: str, *, deliverable_id: str, round_no: int, body: str, objections: list[dict], run_id: str | None) -> str:
-        """Every objection must point at a claim or a missing must-answer item (section 7)."""
         d = self._one("SELECT id FROM deliverables WHERE id=? AND problem_id=?", deliverable_id, pid)
         if not d:
             raise LedgerError("unknown deliverable for this problem")
         if round_no > self.config.max_critique_rounds:
             raise LedgerError(f"maximum {self.config.max_critique_rounds} critique rounds")
-        clean = []
-        for ob in objections or []:
-            if not isinstance(ob, dict) or not ob.get("objection"):
-                raise LedgerError("each objection needs an 'objection' text")
-            target = ob.get("claim_id") or ob.get("must_answer_item")
-            if not target:
-                raise LedgerError("each objection must point at a claim_id or a must_answer_item")
-            if ob.get("claim_id"):
-                self.get_claim(ob["claim_id"])
-            clean.append({"claim_id": ob.get("claim_id"), "must_answer_item": ob.get("must_answer_item"), "objection": str(ob["objection"])[:1000]})
+        clean = self._clean_objections(pid, objections, allow_tasks=False)
         kid = new_id("k")
         self.conn.execute(
             "INSERT INTO critiques(id, problem_id, target_kind, target_id, round, body, objections, run_id, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
             (kid, pid, "deliverable", deliverable_id, int(round_no), (body or "").strip(), json.dumps(clean), run_id, now_iso()),
         )
         self.event(pid, "critique", f"{kid} round {round_no}: {len(clean)} objections")
+        return kid
+
+    def post_plan_review(self, pid: str, *, body: str, objections: list[dict], run_id: str | None) -> str:
+        """The critic attacks the plan before any reader spends a token. An
+        objection names a task (unanswerable, duplicate, too broad), a
+        must-answer item with no task, or a hypothesis nobody will test."""
+        if self.list_critiques(pid, "plan"):
+            raise LedgerError("the plan was already reviewed; one review round")
+        clean = self._clean_objections(pid, objections, allow_tasks=True)
+        kid = new_id("k")
+        self.conn.execute(
+            "INSERT INTO critiques(id, problem_id, target_kind, target_id, round, body, objections, run_id, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (kid, pid, "plan", pid, 0, (body or "").strip(), json.dumps(clean), run_id, now_iso()),
+        )
+        self.event(pid, "plan_review", f"{kid}: {len(clean)} objections")
         return kid
 
     def list_critiques(self, pid: str, target_kind: str | None = None) -> list[dict]:
@@ -693,7 +738,36 @@ class Ledger:
         merged = split_topics(list(a["topics"]) + tops)
         self.conn.execute("UPDATE agents SET topics=?, brief=?, registered=1 WHERE id=?", (",".join(merged), (brief or "").strip()[:400], aid))
         self.event(a["problem_id"], "agent_registered", f"{aid} {a['name']}: {', '.join(merged)}")
+        self._route_waiting(self.get_agent(aid))
         return self.get_agent(aid)
+
+    def _route_waiting(self, agent: dict) -> int:
+        """A topic message posted before its reader existed waits on the
+        board. When an agent registers topics that overlap it, and the
+        message still has room for recipients, it is delivered now."""
+        if agent["role"] not in {r for allowed in MAY_MESSAGE.values() for r in allowed} or agent["role"] == "lead":
+            return 0
+        rows = self._all(
+            "SELECT m.id, m.from_agent, m.topics, m.thread_id FROM messages m JOIN threads t ON t.id=m.thread_id "
+            "WHERE m.problem_id=? AND m.to_agent IS NULL AND m.topics<>'' AND t.status='open' AND m.from_agent<>?",
+            agent["problem_id"], agent["id"])
+        delivered = 0
+        for m in rows:
+            sender = self.get_agent(m["from_agent"])
+            if agent["role"] not in MAY_MESSAGE.get(sender["role"], set()):
+                continue
+            if not _topic_overlap(split_topics(m["topics"]), agent["topics"]):
+                continue
+            n = self._one("SELECT COUNT(*) c FROM pickups WHERE message_id=?", m["id"])["c"]
+            if n >= self.config.max_topic_matches:
+                continue
+            cur = self.conn.execute("INSERT OR IGNORE INTO pickups(message_id, agent_id, problem_id, created_at) VALUES (?,?,?,?)",
+                                    (m["id"], agent["id"], agent["problem_id"], now_iso()))
+            if cur.rowcount:
+                delivered += 1
+                self.conn.execute("UPDATE messages SET routing = routing || ? WHERE id=?", (f"; later to {agent['name']}", m["id"]))
+                self.event(agent["problem_id"], "message_routed_late", f"{m['id']} to {agent['name']} on registration")
+        return delivered
 
     def get_agent(self, aid: str) -> dict:
         row = self._one("SELECT * FROM agents WHERE id=?", aid)

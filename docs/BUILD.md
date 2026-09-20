@@ -2,7 +2,7 @@
 
 Branch: `claude/artifact-build-dw4ib9` in `rcvandijk1/MeetingVault`
 Source design: "Research Think Tank — High-Level Design v0.1", 19 Sep 2026, revision 34 (section 14 added 20 Sep)
-Status: built, tested (61 tests), live-verified against the real `claude` CLI for the MCP path and the message board; not yet run on a real problem
+Status: built, tested (68 tests), live-verified against the real `claude` CLI for the MCP path, the message board and the Fable model flags; not yet run on a real problem
 Name: Nightwatch (display name, `system_name` in config)
 
 ---
@@ -39,6 +39,9 @@ reply board, no always-on agents, no integration with any other system.
 | Volume | 1–2 problems per week | Ephemeral agents, one problem at a time, ≤ 3 agents concurrently, optional off-hours window |
 | Home | Own repo, own box | This repo; **local isolated box** decided 19 Sep 2026 |
 | Communication | Agents blind to each other | **Changed 20 Sep**: agents have identity (one session each, resumed on wake), register in an index, and talk through a shared message board, addressed or topic-routed, interleaved with the work, in both modes; 200k tokens per thread, no reply limit |
+| Plan quality | Lead plans, readers start | **Added 20 Sep**: the critic reviews the plan before any reader starts; one objection round, one revision round (add or cancel subtasks) |
+| Hypotheses | Not in the template | **Added 20 Sep**: up to 5 per post; tested, not confirmed; verdict per hypothesis in the deliverable, checked by critic and judge |
+| Models | Reader cheapest, thinker top, critic mid | **Set 20 Sep**: lead and synthesizer on Fable, critic Sonnet (Opus for premortems), readers Haiku; fallback model and effort per role |
 
 ## 3. Architecture
 
@@ -115,14 +118,22 @@ Claim expiry defaults (days): price 182, market_size 182, capability 365, compan
 
 ## 5. Roles, models and tools
 
-| Role | Model tier (default alias) | Built-in tools | Ledger tools | Board tools | Sees |
-|------|----------------------------|----------------|--------------|-------------|------|
-| reader | cheapest (`haiku`) | WebSearch, WebFetch | `get_task`, `search_claims`, `post_note`, `finish_task` | register, index, post, inbox, thread | one sub-question, its mail |
-| lead | top (`opus`) | none | `get_problem`, `search_claims`, `list_tasks`, `post_subtask`, `list_notes` | register, index, post, inbox, thread, `list_threads` | full brief, ledger, its mail |
-| thinker (ideas) | top (`opus`) | none | `get_problem`, `search_claims`, `post_option`, `list_my_options`, `repair_option`, `withdraw_option` | register, index, post, inbox, thread (board closed during divergence) | own options, its mail |
-| critic | mid (`sonnet`) | WebFetch in verify and on wakes | `get_problem`, `search_claims`, `list_notes`, `verify_note`, `list_claims`, `get_deliverable`, `post_critique`, `list_critiques`, `list_tasks`, `list_options`, `post_premortem` | register, index, post, inbox, thread, `list_threads` | notes, claims, deliverable, options, its mail |
-| synthesizer | top (`opus`) | none | `get_problem`, `search_claims`, `list_claims`, `list_notes`, `list_tasks`, `list_critiques`, `list_options`, `get_deliverable`, `submit_deliverable` | register, index, thread, `list_threads` (read only, cannot post) | verified claims, critiques, options, every thread |
-| judge | mid (`sonnet`) | none | `get_brief`, `get_deliverable`, `submit_verdict` | none | brief and deliverable, nothing else |
+| Role | Model (default; fallback; effort) | Built-in tools | Ledger tools | Board tools | Sees |
+|------|-----------------------------------|----------------|--------------|-------------|------|
+| reader | `haiku`; `sonnet`; medium | WebSearch, WebFetch | `get_task`, `search_claims`, `post_note`, `finish_task` | register, index, post, inbox, thread | one sub-question, its mail |
+| lead | `fable`; `opus`; high | none | `get_problem`, `search_claims`, `list_tasks`, `post_subtask`, `cancel_subtask`, `list_notes`, `list_critiques` | register, index, post, inbox, thread, `list_threads` | full brief, ledger, plan review, its mail |
+| thinker (ideas) | `fable`; `opus`; high | none | `get_problem`, `search_claims`, `post_option`, `list_my_options`, `repair_option`, `withdraw_option` | register, index, post, inbox, thread (board closed during divergence) | own options, its mail |
+| critic | `sonnet` (ideas: `opus`); `opus`; medium (ideas: high) | WebFetch in verify and on wakes | `get_problem`, `search_claims`, `list_tasks`, `review_plan`, `list_notes`, `verify_note`, `list_claims`, `get_deliverable`, `post_critique`, `list_critiques`, `list_options`, `post_premortem` | register, index, post, inbox, thread, `list_threads` | plan, notes, claims, deliverable, options, its mail |
+| synthesizer | `fable`; `opus`; high | none | `get_problem`, `search_claims`, `list_claims`, `list_notes`, `list_tasks`, `list_critiques`, `list_options`, `get_deliverable`, `submit_deliverable` | register, index, thread, `list_threads` (read only, cannot post) | verified claims, critiques, options, every thread |
+| judge | `sonnet`; `opus`; medium | none | `get_brief`, `get_deliverable`, `submit_verdict` | none | brief (including hypotheses) and deliverable, nothing else |
+
+The critic is one agent per problem with one system prompt; each stage's
+instructions (plan review, verification, deliverable critique, premortem)
+arrive as the message that spawns or wakes it. Fable costs twice Opus per
+token ($10/$50 vs $5/$25 per million at API list price); the lead and
+synthesizer run once per problem plus wakes, readers carry the volume on
+Haiku. The CLI's `--fallback-model` takes over when the primary is
+unavailable or refuses; `--effort` sets thinking depth.
 
 Board tools: `register_self(topics, brief)`, `list_agents()`, `post_message(kind, body, to | topics, refs, thread_id)`, `read_inbox()`, `get_thread(id)`, `list_threads()`.
 
@@ -174,7 +185,8 @@ stop conditions (own token cap if set, deadline).
 
 | Stage | What happens | Board | Fallbacks |
 |-------|--------------|-------|-----------|
-| `plan` | Lead is born, checks the ledger, posts one subtask per must-answer item with criteria and a slice | open | No subtasks → supervisor creates one per must-answer item |
+| `plan` | Lead is born, checks the ledger, posts one subtask per must-answer item with criteria and a slice; every hypothesis gets a subtask that looks for evidence against it | open | No subtasks → supervisor creates one per must-answer item |
+| `plan_review` | Critic is born and attacks the plan: uncovered items, unanswerable or overlapping subtasks, hypotheses nobody will test. Objections wake the lead for one revision round (`post_subtask`, `cancel_subtask`) | open | No review posted → plan stands; no open subtasks after revision → escalate |
 | `read` | Event loop: open leaf tasks dispatched to newborn readers (one agent per task, leased) and agents with unread mail woken, ≤ 3 at once, until nothing is open and no mail waits in a thread with budget | open | Run failed or no notes → task reopened once (same reader woken to continue), escalated the second time; expired leases reclaimed; parents merged when children close; zero notes overall → escalate |
 | `verify` | (a) Supervisor fetches each note's URL, substring-matches the quote: fail → rejected; pass/unsupported → forward. (b) Critic is born, re-fetches, judges date and context, calls `verify_note`, may object to a reader by message. (c) Event loop: objected readers woken, may post better notes; new notes go through (a) and a critic wake for round 2 | open | Notes still unverified → rejected "not verified within the critic's budget"; zero claims → escalate |
 | `synthesize` | Synthesizer is born, reads claims, tasks, threads and critiques, writes deliverable v1 from verified claims only, lists unanswered items and unanswered questions | read-only | No deliverable → escalate |
@@ -223,8 +235,19 @@ stop conditions (own token cap if set, deadline).
 
 Post validation (before any agent): mode in {research, ideas}; question,
 decision, evidence standard, deliverable non-empty; 3–7 must-answer items;
-deadline parses (HH:MM = next occurrence local time, or ISO) and is in the
-future; token cap ≥ 0 (0 = none); confidential flag → reject.
+0–5 hypotheses; deadline parses (HH:MM = next occurrence local time, or
+ISO) and is in the future; token cap ≥ 0 (0 = none); confidential flag →
+reject.
+
+Plan review: one review per problem; each objection names a `task_id`
+(must belong to the problem), a `must_answer_item`, or a `hypothesis`
+(must be one the post lists); the lead may cancel only an open subtask
+with no children and no notes, with a reason.
+
+Hypotheses: in every brief including the judge's; a critique objection may
+target a hypothesis; the synthesizer's instructions require a verdict per
+hypothesis with claim ids; the judge fails a deliverable that leaves one
+without a verdict.
 
 Splitting: merge owner required; slice > 0; slice ≤ parent's remaining
 (parent's slice minus children minus used; for top-level, problem cap minus
@@ -317,7 +340,11 @@ environment variables. All optional.
 | `heartbeat_seconds` | 30 | Daemon heartbeat interval; dead after three misses |
 | `claude_bin` | `claude` | CLI to spawn |
 | `auth_mode` | `subscription` | `subscription` strips the API key; `api_key` requires it and runs `--bare` |
-| `models` | reader haiku, thinker opus, critic sonnet, synthesizer opus, judge sonnet | Aliases or full model names; lead uses the thinker tier |
+| `models` | reader haiku, thinker fable, critic sonnet, synthesizer fable, judge sonnet | Aliases or full model names; lead uses the thinker tier |
+| `models_ideas` | critic opus | Overrides for ideas mode |
+| `fallback_models` | thinker opus, synthesizer opus, critic opus, reader sonnet, judge opus | Passed as `--fallback-model`; omitted when equal to the primary |
+| `effort` | reader medium, thinker high, critic medium, synthesizer high, judge medium | Passed as `--effort`; empty omits the flag |
+| `effort_ideas` | critic high | Overrides for ideas mode |
 | `spend_max_usd_month` | 100.0 | Reference figure for the spend panel |
 | `max_usd_per_run` | 8.0 | Runaway guard per agent run; 0 disables |
 | `run_timeout_seconds` | 1800 | Per agent run |
@@ -409,6 +436,8 @@ latest draft or "No deliverable was written", claims so far, and options.
 | `test_board.py` | Index birth and self-registration; addressed and topic routing with the two-recipient cap and role rules; board closed during divergence and after synthesis; thread budget, settlement and late-mail regression; question wakes recipients and the answer wakes the asker in the same sessions; a finding to the lead yields a new subtask picked up in the same loop; a critic objection wakes a reader who posts a better note verified in round 2; answer ping-pong stops at the thread budget; ideas combine round; rate-limited first run respawns instead of resuming; retirement deletes sessions |
 | `test_runner.py` (added) | Session and resume flags, agent id in the MCP env, session file path encoding and deletion |
 | `test_attention.py` | Attention items, heartbeat staleness, daemon heartbeat and stop, the JSON endpoint and read-marking over a live HTTP server |
+| `test_plan_review.py` | Plan review before reading with one critic identity across stages; objections wake the lead who cancels and adds subtasks; one-round and cancel rules; hypotheses from post to brief, prompts, critique and reply; models, fallbacks and effort per role and mode; CLI flags; mode-specific models in the supervisor |
+| `test_board.py` (added) | A topic message that finds nobody is delivered when a matching agent registers later; the lead never receives topic mail |
 
 The fake runner plays every role by calling the same `call_tool` layer the
 MCP server uses, so the tests exercise the real tool surface, not a mock of it.
@@ -428,6 +457,12 @@ read its inbox and answered in the thread, the lead was woken by resuming
 its session and read the answer, all pickups settled, the thread was
 charged, and retirement removed both working directories and transcripts.
 Cost of that exchange: four runs, about $0.09.
+
+Verified on 20 Sep: `claude -p --model fable --fallback-model opus
+--effort low` runs on this account; the result's `modelUsage` names
+`claude-fable-5-1`. A one-word reply cost about $0.07 at list price, which
+is the Fable premium on the CLI's own context. Whether your Max plan serves
+Fable headless is checked on install day with the same command.
 
 Not verified: any reader or critic run with web tools; the mechanical
 fetcher against the open internet (the build sandbox refuses general egress);

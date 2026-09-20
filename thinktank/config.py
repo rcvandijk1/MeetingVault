@@ -17,13 +17,22 @@ DEFAULT_DB = "thinktank.sqlite3"
 
 # Role -> model tier. Aliases resolve to the latest model in the CLI; a full
 # model name works too. Section 6 of the design fixes the tiers, not the names.
+# Planning and writing get the top model; reading is volume and stays cheap;
+# verification is mechanical judgement and stays mid.
 DEFAULT_MODELS = {
     "reader": "haiku",
-    "thinker": "opus",
+    "thinker": "fable",       # the lead uses this tier too
     "critic": "sonnet",
-    "synthesizer": "opus",
+    "synthesizer": "fable",
     "judge": "sonnet",
 }
+# Overrides for ideas mode, where the critic's premortem is judgement, not checking.
+DEFAULT_MODELS_IDEAS = {"critic": "opus"}
+# If the primary model is unavailable or refuses, the CLI continues on this one.
+DEFAULT_FALLBACK_MODELS = {"thinker": "opus", "synthesizer": "opus", "critic": "opus", "reader": "sonnet", "judge": "opus"}
+# Effort per role: how hard the model thinks. low | medium | high | xhigh | max.
+DEFAULT_EFFORT = {"reader": "medium", "thinker": "high", "critic": "medium", "synthesizer": "high", "judge": "medium"}
+DEFAULT_EFFORT_IDEAS = {"critic": "high"}
 
 
 @dataclass
@@ -38,6 +47,10 @@ class Config:
     # CLI in bare mode with a Console spend limit as the outer guard.
     auth_mode: str = "subscription"
     models: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MODELS))
+    models_ideas: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_MODELS_IDEAS))
+    fallback_models: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_FALLBACK_MODELS))
+    effort: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_EFFORT))
+    effort_ideas: dict[str, str] = field(default_factory=lambda: dict(DEFAULT_EFFORT_IDEAS))
     # Spend status (section 9). There is no hard limit on the subscription;
     # the board shows spend against this figure, the plan's monthly price.
     spend_max_usd_month: float = 100.0
@@ -94,10 +107,27 @@ class Config:
         default_factory=lambda: {"haiku": 2.0, "sonnet": 6.0, "opus": 15.0, "fable": 20.0}
     )
 
-    def model_for(self, role: str) -> str:
+    @staticmethod
+    def _role_key(role: str) -> str:
         # The lead is a thinker with a planning job; same tier.
-        key = "thinker" if role == "lead" else role
+        return "thinker" if role == "lead" else role
+
+    def model_for(self, role: str, mode: str = "research") -> str:
+        key = self._role_key(role)
+        if mode == "ideas" and key in self.models_ideas:
+            return self.models_ideas[key]
         return self.models.get(key, DEFAULT_MODELS.get(key, "sonnet"))
+
+    def fallback_for(self, role: str, mode: str = "research") -> str | None:
+        key = self._role_key(role)
+        fb = self.fallback_models.get(key)
+        return fb if fb and fb != self.model_for(role, mode) else None
+
+    def effort_for(self, role: str, mode: str = "research") -> str | None:
+        key = self._role_key(role)
+        if mode == "ideas" and key in self.effort_ideas:
+            return self.effort_ideas[key] or None
+        return self.effort.get(key) or None
 
     def claim_expiry_for(self, claim_type: str) -> int | None:
         return self.claim_expiry_days.get(claim_type, self.claim_expiry_days.get("other"))

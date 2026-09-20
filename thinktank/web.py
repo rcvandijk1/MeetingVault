@@ -158,6 +158,7 @@ class Handler(BaseHTTPRequestHandler):
                         must_answer=form.get("must_answer", "").splitlines(), evidence_standard=form.get("evidence_standard", ""),
                         deliverable=form.get("deliverable", ""), token_cap=int(form.get("token_cap") or 0),
                         deadline=form.get("deadline", ""), confidential=form.get("confidential") == "on",
+                        hypotheses=form.get("hypotheses", "").splitlines(),
                     )
                     return self.redirect(f"/problem/{pid}")
                 except (LedgerError, ValueError) as e:
@@ -213,6 +214,7 @@ class Handler(BaseHTTPRequestHandler):
 <label>Question (one sentence)</label><input type=text name=question value="{esc(form.get('question'))}">
 <label>Decision it feeds</label><input type=text name=decision value="{esc(form.get('decision'))}">
 <label>Must-answer list (3 to 7 lines)</label><textarea name=must_answer>{esc(form.get('must_answer'))}</textarea>
+<label>Hypotheses (optional, up to 5 lines): your own proposed answers. Readers look for evidence against them; the deliverable gives each a verdict</label><textarea name=hypotheses>{esc(form.get('hypotheses'))}</textarea>
 <label>Evidence standard (source type and maximum age)</label><input type=text name=evidence_standard value="{esc(form.get('evidence_standard'))}">
 <label>Deliverable (format and length)</label><input type=text name=deliverable value="{esc(form.get('deliverable'))}">
 <label>Token cap (optional; empty means no cap, spend is shown above)</label><input type=text name=token_cap value="{esc(form.get('token_cap') or '')}">
@@ -268,6 +270,8 @@ class Handler(BaseHTTPRequestHandler):
 {f"<p class=err>{esc(p['error'])}</p>" if p['error'] else ''}
 <p><b>Question:</b> {esc(p['question'])}<br><b>Decision it feeds:</b> {esc(p['decision'])}<br><b>Evidence standard:</b> {esc(p['evidence_standard'])}<br><b>Deliverable:</b> {esc(p['deliverable'])}</p>
 <ol>{''.join(f'<li>{esc(m)}</li>' for m in p['must_answer'])}</ol>
+{f"<p><b>Hypotheses:</b></p><ol>{''.join(f'<li>{esc(h)}</li>' for h in p['hypotheses'])}</ol>" if p['hypotheses'] else ''}
+{self.plan_review(L, pid)}
 {f"<h2>Verdict</h2><p class={'ok' if v['passed'] else 'err'}>{'pass' if v['passed'] else 'fail'}: {esc(v['reasons'])}</p>" if v else ''}
 {f"<h2>Deliverable v{d['version']}</h2><pre>{esc(d['body'])}</pre>" if d else ''}
 <h2>Conversations</h2>{conversations}
@@ -278,6 +282,14 @@ class Handler(BaseHTTPRequestHandler):
 <h2>Fetch log</h2><table><tr><th>At</th><th>Role</th><th>Kind</th><th>URL or query</th></tr>{fetches}</table>
 <h2>Events</h2><table><tr><th>At</th><th>Kind</th><th>Detail</th></tr>{events}</table>"""
         return self.page(f"Problem {pid}", body)
+
+    def plan_review(self, L: Ledger, pid: str) -> str:
+        reviews = L.list_critiques(pid, "plan")
+        if not reviews:
+            return ""
+        r = reviews[0]
+        items = "".join(f"<li>{esc(o.get('task_id') or o.get('must_answer_item') or o.get('hypothesis'))}: {esc(o['objection'])}</li>" for o in r["objections"])
+        return f"<h2>Plan review</h2><p>{esc(r['body'])}</p>" + (f"<ul>{items}</ul>" if items else "<p class=ok>No objections; the plan stood.</p>")
 
     def replies(self, L: Ledger) -> bytes:
         rows = "".join(

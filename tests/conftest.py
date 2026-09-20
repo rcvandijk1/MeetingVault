@@ -122,6 +122,12 @@ def reader_read(spec, call, on_fetch):
     call("finish_task", summary=f"found one fact about {t['title']}")
 
 
+def critic_plan_review(spec, call, on_fetch):
+    call("register_self", topics=["verification", "critique"], brief="critic")
+    call("list_tasks")
+    call("review_plan", body="plan stands", objections=[])
+
+
 def critic_verify(spec, call, on_fetch):
     for n in call("list_notes", status="unverified"):
         if on_fetch:
@@ -180,6 +186,7 @@ DEFAULTS = {
     ("thinker", "wake"): wake_default,
     ("critic", "wake"): wake_default,
     ("lead", "plan"): lead_plan,
+    ("critic", "plan_review"): critic_plan_review,
     ("reader", "read"): reader_read,
     ("critic", "verify"): critic_verify,
     ("synthesizer", "synthesize"): synthesizer_synthesize,

@@ -146,7 +146,7 @@ def test_search_claims_hides_expired_unless_asked(ledger):
 def test_critique_objections_must_target_claim_or_item(ledger):
     pid = post(ledger)
     did = ledger.submit_deliverable(pid, body="x", unanswered=[], disagreements="", run_id=None)
-    with pytest.raises(LedgerError, match="claim_id or a must_answer_item"):
+    with pytest.raises(LedgerError, match="claim_id, a must_answer_item, a hypothesis"):
         ledger.post_critique(pid, deliverable_id=did, round_no=1, body="b", objections=[{"objection": "vague"}], run_id=None)
     with pytest.raises(LedgerError, match="unknown claim"):
         ledger.post_critique(pid, deliverable_id=did, round_no=1, body="b", objections=[{"claim_id": "c_nope", "objection": "x"}], run_id=None)
