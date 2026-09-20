@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -65,6 +66,27 @@ def test_stream_parsing_logs_fetches_and_usage():
     err = RunResult(status="error")
     ClaudeCodeRunner._consume({"type": "result", "subtype": "error_during_execution", "is_error": True, "result": "boom", "usage": {}}, err, None)
     assert err.status == "error" and "boom" in err.error
+
+
+def test_identity_flags_and_session_cleanup(tmp_path, monkeypatch):
+    r = ClaudeCodeRunner(Config(), str(tmp_path / "db"))
+    first = r.command(spec(agent_id="a_1", session_id="11111111-1111-1111-1111-111111111111", workdir=str(tmp_path / "w")))
+    assert first[first.index("--session-id") + 1].startswith("1111") and "--no-session-persistence" not in first and "--system-prompt" in first
+    wake = r.command(spec(agent_id="a_1", session_id="11111111-1111-1111-1111-111111111111", workdir=str(tmp_path / "w"), resume=True, system_prompt=""))
+    assert wake[wake.index("--resume") + 1].startswith("1111") and "--system-prompt" not in wake and "--session-id" not in wake
+    assert json.loads(wake[wake.index("--mcp-config") + 1])["mcpServers"]["ledger"]["env"]["THINKTANK_AGENT"] == "a_1"
+    ephemeral = r.command(spec())
+    assert "--no-session-persistence" in ephemeral
+    # cleanup removes the working directory and the CLI's transcript for that session
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    workdir = tmp_path / "agents" / "p_1" / "reader-x"
+    workdir.mkdir(parents=True)
+    f = ClaudeCodeRunner.session_file(str(workdir), "sid-1")
+    assert f.parent.name == re.sub(r"[^A-Za-z0-9]", "-", str(workdir.resolve()))
+    f.parent.mkdir(parents=True)
+    f.write_text("{}")
+    ClaudeCodeRunner.delete_agent(str(workdir), "sid-1")
+    assert not workdir.exists() and not f.exists() and not f.parent.exists()
 
 
 def test_missing_binary_is_an_error_not_a_crash(tmp_path):

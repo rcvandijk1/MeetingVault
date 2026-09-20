@@ -47,6 +47,13 @@ class RunSpec:
     round_no: int = 1
     max_usd: float = 8.0
     timeout_seconds: int = 1800
+    # Identity: an agent's own context is one Claude Code session in one
+    # working directory, kept for the life of its problem. A first run
+    # creates it (session_id set, resume False); a wake resumes it.
+    agent_id: str | None = None
+    session_id: str | None = None
+    resume: bool = False
+    workdir: str | None = None
 
 
 @dataclass
@@ -84,6 +91,7 @@ class ClaudeCodeRunner:
             "THINKTANK_TASK": spec.task_id or "",
             "THINKTANK_SLOT": "" if spec.slot is None else str(spec.slot),
             "THINKTANK_ROUND": str(spec.round_no),
+            "THINKTANK_AGENT": spec.agent_id or "",
             "PYTHONPATH": _repo_root(),
         }
         cfg_path = os.environ.get("THINKTANK_CONFIG")
@@ -97,15 +105,22 @@ class ClaudeCodeRunner:
             self.config.claude_bin, "-p", spec.user_prompt,
             "--output-format", "stream-json", "--verbose",
             "--model", spec.model,
-            "--system-prompt", spec.system_prompt,
             "--tools", ",".join(spec.builtin_tools),
             "--allowedTools", ",".join(allowed),
             "--mcp-config", json.dumps(self.mcp_config(spec)),
             "--strict-mcp-config",
             "--permission-prompts", "none",
-            "--no-session-persistence",
             "--disable-slash-commands",
         ]
+        if spec.system_prompt:
+            cmd += ["--system-prompt", spec.system_prompt]
+        # On a resume the CLI reuses the session's recorded system prompt.
+        if spec.resume and spec.session_id:
+            cmd += ["--resume", spec.session_id]
+        elif spec.session_id and spec.workdir:
+            cmd += ["--session-id", spec.session_id]
+        else:
+            cmd.append("--no-session-persistence")
         if spec.max_usd > 0:
             cmd += ["--max-budget-usd", f"{spec.max_usd:.2f}"]
         if self.config.auth_mode == "api_key":
@@ -131,7 +146,12 @@ class ClaudeCodeRunner:
     def run(self, spec: RunSpec, on_fetch: FetchHook | None = None) -> RunResult:
         if shutil.which(self.config.claude_bin) is None:
             return RunResult(status="error", error=f"claude binary not found: {self.config.claude_bin}")
-        workdir = tempfile.mkdtemp(prefix="thinktank-run-")
+        persistent = bool(spec.workdir)
+        if persistent:
+            workdir = spec.workdir
+            Path(workdir).mkdir(parents=True, exist_ok=True)
+        else:
+            workdir = tempfile.mkdtemp(prefix="thinktank-run-")
         result = RunResult(status="error")
         stderr_chunks: list[str] = []
         try:
@@ -182,8 +202,30 @@ class ClaudeCodeRunner:
                 result.status = "rate_limited"
                 result.error = result.final_text[-300:]
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            if not persistent:
+                shutil.rmtree(workdir, ignore_errors=True)
         return result
+
+    @staticmethod
+    def session_file(workdir: str, session_id: str) -> Path:
+        """Where the CLI keeps a session's transcript: under the user's
+        Claude directory, in a folder named after the working directory."""
+        home = Path(os.environ.get("CLAUDE_CONFIG_DIR") or (Path.home() / ".claude"))
+        encoded = re.sub(r"[^A-Za-z0-9]", "-", str(Path(workdir).resolve()))
+        return home / "projects" / encoded / f"{session_id}.jsonl"
+
+    @classmethod
+    def delete_agent(cls, workdir: str, session_id: str) -> None:
+        """An agent dies with its problem: its working directory and its
+        session transcript (which holds raw web content) are removed."""
+        shutil.rmtree(workdir, ignore_errors=True)
+        f = cls.session_file(workdir, session_id)
+        try:
+            f.unlink(missing_ok=True)
+            if f.parent.exists() and not any(f.parent.iterdir()):
+                f.parent.rmdir()
+        except OSError:
+            pass
 
     @staticmethod
     def _consume(ev: dict, result: RunResult, on_fetch: FetchHook | None) -> None:

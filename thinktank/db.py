@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS problems (
   deadline TEXT NOT NULL,             -- ISO 8601 UTC
   confidential INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL,               -- posted|rejected|queued|planning|working|critiquing|synthesizing|judging|passed|escalated
-  stage TEXT,
+  stage TEXT,                         -- last completed stage
+  stage_now TEXT,                     -- stage currently running
   not_before TEXT,
   tokens_used INTEGER NOT NULL DEFAULT 0,
   cost_usd REAL NOT NULL DEFAULT 0,
@@ -150,6 +151,7 @@ CREATE TABLE IF NOT EXISTS runs (
   role TEXT NOT NULL,
   model TEXT NOT NULL,
   slot INTEGER,
+  agent_id TEXT,
   status TEXT NOT NULL,               -- running|ok|error|timeout|rate_limited
   started_at TEXT NOT NULL,
   finished_at TEXT,
@@ -192,6 +194,76 @@ CREATE TABLE IF NOT EXISTS escalations (
   created_at TEXT NOT NULL
 );
 
+-- Agent index (registry). One row per agent born for a problem. The agent's
+-- own context is one Claude Code session, resumed on every wake, deleted at
+-- problem close.
+CREATE TABLE IF NOT EXISTS agents (
+  id TEXT PRIMARY KEY,
+  problem_id TEXT NOT NULL REFERENCES problems(id),
+  role TEXT NOT NULL,
+  name TEXT NOT NULL,
+  task_id TEXT,
+  slot INTEGER,
+  topics TEXT NOT NULL DEFAULT '',   -- comma-separated, lowercase
+  brief TEXT NOT NULL DEFAULT '',
+  session_id TEXT NOT NULL,
+  workdir TEXT NOT NULL,
+  model TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'alive',   -- alive | retired
+  registered INTEGER NOT NULL DEFAULT 0,  -- 1 once the agent completed its own registration
+  session_ready INTEGER NOT NULL DEFAULT 0,  -- 1 once a first run established the session; until then a wake is a spawn
+  wakes INTEGER NOT NULL DEFAULT 0,
+  tokens_used INTEGER NOT NULL DEFAULT 0,
+  born_at TEXT NOT NULL,
+  last_wake_at TEXT,
+  retired_at TEXT
+);
+CREATE INDEX IF NOT EXISTS agents_problem ON agents(problem_id, status);
+
+CREATE TABLE IF NOT EXISTS threads (
+  id TEXT PRIMARY KEY,
+  problem_id TEXT NOT NULL REFERENCES problems(id),
+  subject TEXT NOT NULL,
+  topics TEXT NOT NULL DEFAULT '',
+  budget_tokens INTEGER NOT NULL,
+  tokens_used INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'open',    -- open | closed
+  closed_reason TEXT,
+  artefacts TEXT NOT NULL DEFAULT '[]',   -- JSON list of note/task/claim/option ids produced from this thread
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  id TEXT PRIMARY KEY,
+  problem_id TEXT NOT NULL REFERENCES problems(id),
+  thread_id TEXT NOT NULL REFERENCES threads(id),
+  parent_id TEXT REFERENCES messages(id),
+  from_agent TEXT NOT NULL,
+  to_agent TEXT,                          -- addressed, or NULL for topic routing
+  kind TEXT NOT NULL,                     -- question | finding | objection | request | answer
+  body TEXT NOT NULL,
+  refs TEXT NOT NULL DEFAULT '[]',        -- JSON list of note/claim/option/task ids
+  topics TEXT NOT NULL DEFAULT '',
+  routing TEXT NOT NULL DEFAULT '',       -- how recipients were chosen, for the audit trail
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS messages_thread ON messages(thread_id, created_at);
+
+-- A pickup is one recipient's obligation to read one message. The supervisor
+-- wakes the agent; the agent reads its inbox; the pickup is then done.
+CREATE TABLE IF NOT EXISTS pickups (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_id TEXT NOT NULL REFERENCES messages(id),
+  agent_id TEXT NOT NULL REFERENCES agents(id),
+  problem_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending', -- pending | delivered | done
+  created_at TEXT NOT NULL,
+  delivered_at TEXT,
+  UNIQUE(message_id, agent_id)
+);
+CREATE INDEX IF NOT EXISTS pickups_agent ON pickups(agent_id, status);
+
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   problem_id TEXT,
@@ -222,6 +294,8 @@ MIGRATIONS = [
     ("notes", "quote_check", "TEXT"),
     ("notes", "quote_check_detail", "TEXT"),
     ("claims", "quote_checked", "INTEGER NOT NULL DEFAULT 0"),
+    ("problems", "stage_now", "TEXT"),  # the stage currently running; `stage` is the last completed
+    ("runs", "agent_id", "TEXT"),
 ]
 
 

@@ -161,6 +161,12 @@ class Handler(BaseHTTPRequestHandler):
         events = "".join(f"<tr><td>{esc(e['at'])}</td><td>{esc(e['kind'])}</td><td>{esc(e['detail'])}</td></tr>" for e in L.events(pid))
         d = L.latest_deliverable(pid)
         v = L.latest_verdict(pid)
+        agents = L.list_agents(pid, alive_only=False)
+        agent_rows = "".join(
+            f"<tr><td>{esc(a['name'])}</td><td>{esc(a['role'])}</td><td>{esc(', '.join(a['topics']))}</td><td>{esc(a['brief'])}</td>"
+            f"<td><span class=badge>{esc(a['status'])}</span>{' · registered' if a['registered'] else ''}</td><td>{a['wakes']}</td><td>{a['tokens_used']:,}</td></tr>"
+            for a in agents)
+        conversations = self.conversations(L, pid)
         body = f"""
 <p><span class=badge>{esc(p['status'])}</span> stage: {esc(p['stage'] or '-')} · mode: {esc(p['mode'])} · tokens {self.tokens_cell(p)} · cost ${p['cost_usd']:.2f} · deadline {esc(p['deadline'])}</p>
 {f"<p class=err>{esc(p['error'])}</p>" if p['error'] else ''}
@@ -168,12 +174,37 @@ class Handler(BaseHTTPRequestHandler):
 <ol>{''.join(f'<li>{esc(m)}</li>' for m in p['must_answer'])}</ol>
 {f"<h2>Verdict</h2><p class={'ok' if v['passed'] else 'err'}>{'pass' if v['passed'] else 'fail'}: {esc(v['reasons'])}</p>" if v else ''}
 {f"<h2>Deliverable v{d['version']}</h2><pre>{esc(d['body'])}</pre>" if d else ''}
+<h2>Conversations</h2>{conversations}
+<h2>Agent index</h2><table><tr><th>Name</th><th>Role</th><th>Topics</th><th>Brief</th><th>Status</th><th>Wakes</th><th>Tokens</th></tr>{agent_rows}</table>
 <h2>Subtasks</h2><table><tr><th>Id</th><th>Depth</th><th>Title</th><th>Status</th><th>Tokens</th><th>Summary</th></tr>{tasks}</table>
 <h2>Notes</h2><table><tr><th>Status</th><th>Claim</th><th>Source</th><th>Quote check</th><th>Verification</th></tr>{notes}</table>
 <h2>Runs</h2><table><tr><th>Id</th><th>Role</th><th>Model</th><th>Status</th><th>Tokens</th><th>Cost</th><th>Error</th></tr>{runs}</table>
 <h2>Fetch log</h2><table><tr><th>At</th><th>Role</th><th>Kind</th><th>URL or query</th></tr>{fetches}</table>
 <h2>Events</h2><table><tr><th>At</th><th>Kind</th><th>Detail</th></tr>{events}</table>"""
         return page(f"Problem {pid}", body)
+
+    ROLE_COLOURS = {"reader": "#e8f1fb", "lead": "#fbefe0", "thinker": "#eef8e6", "critic": "#fbe8e8", "synthesizer": "#f1e8fb"}
+
+    def conversations(self, L: Ledger, pid: str) -> str:
+        """Every thread as a message feed. Each bubble is a real message on
+        the board, attributed to the agent that posted it."""
+        threads = L.list_threads(pid)
+        if not threads:
+            return "<p>No messages between agents.</p>"
+        out = []
+        for th in threads:
+            state = "open" if th["status"] == "open" else f"closed: {esc(th['closed_reason'])}"
+            bubbles = ""
+            for m in th["messages"]:
+                colour = self.ROLE_COLOURS.get(m["from_role"], "#eee")
+                to = f" → {esc(L.get_agent(m['to_agent'])['name'])}" if m["to_agent"] else (f" → topics {esc(m['topics'])}" if m["topics"] else "")
+                refs = f"<br><small>refs: {esc(', '.join(m['refs']))}</small>" if m["refs"] else ""
+                bubbles += (f"<div style='background:{colour};border-radius:.6rem;padding:.5rem .75rem;margin:.35rem 0;max-width:46rem'>"
+                            f"<b>{esc(m['from_name'])}</b> <span class=badge>{esc(m['kind'])}</span>{to} <small>{esc(m['created_at'])}</small>"
+                            f"<br>{esc(m['body'])}{refs}</div>")
+            arts = f"<small>artefacts: {esc(', '.join(th['artefacts']))}</small>" if th["artefacts"] else ""
+            out.append(f"<details open><summary><b>{esc(th['subject'])}</b> · {len(th['messages'])} messages · {th['tokens_used']:,}/{th['budget_tokens']:,} tokens · {state}</summary>{bubbles}{arts}</details>")
+        return "".join(out)
 
     def replies(self, L: Ledger) -> bytes:
         rows = "".join(f"<tr><td>{esc(r['created_at'])}</td><td><a href='/reply/{esc(r['id'])}'>{esc(r['problem_id'])}</a></td><td>{r['tokens']:,}</td><td>${r['cost_usd']:.2f}</td></tr>" for r in L.list_replies())

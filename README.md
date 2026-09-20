@@ -26,12 +26,12 @@ You --post--> Inbox board --> Supervisor (plain code)
 |------|-----|
 | `thinktank/ledger.py` | Every named operation over boards and ledgers. All rules that are "enforced in code" live here: post validation, split depth 2, budget slices, merge owner, leases, note schema limits, critique targeting, one repair round. |
 | `thinktank/mcp_server.py` | The one small MCP server agents talk to. Role-scoped tools over stdio, no shell, no files, no git. |
-| `thinktank/supervisor.py` | Stage machine per problem (research and ideas), leases, max 3 concurrent agents, cap and deadline guard between stages, escalation, rate-limit pause. Re-entrant: resumes at the recorded stage. |
-| `thinktank/runner.py` | Spawns `claude -p` with the role's tool set, the ledger as the only MCP server, prompts denied, a per-run dollar ceiling, an empty working directory. Reads usage and logs every fetch from the stream. |
+| `thinktank/supervisor.py` | Stage machine per problem (research and ideas), agent lifecycle (birth, wake, retire), the event loop that interleaves reader dispatch with message pickups, leases, max 3 concurrent agents, cap and deadline guard, escalation, rate-limit pause. Re-entrant: resumes at the recorded stage. |
+| `thinktank/runner.py` | Spawns `claude -p` with the role's tool set, the ledger as the only MCP server, prompts denied, a per-run dollar ceiling. One session per agent in its own working directory, resumed on wake, deleted at close. Reads usage and logs every fetch from the stream. |
 | `thinktank/verify.py` | Mechanical quote check, no model involved: fetch the page, strip the markup, substring-match the quote. |
 | `thinktank/governor.py` | Spend status (7 and 30 days, tokens and API-equivalent dollars) against the plan's monthly price; optional per-problem cap; per-run ceiling. |
 | `thinktank/prompts.py` | System prompts per role and stage. |
-| `thinktank/web.py` | Minimal board over SQLite: inbox with post form, problem detail, replies, escalations, claim lookup. |
+| `thinktank/web.py` | Minimal board over SQLite: inbox with post form and spend panel, problem detail with the conversation feed and agent index, replies, escalations, claim lookup. |
 | `thinktank/cli.py` | `init`, `post`, `daemon`, `run`, `web`, `status`, `purge`. |
 | `docs/baseline-template.md` | Phase 0: measure the built-in Research feature before trusting this. |
 | `tests/` | 42 tests with a fake runner that plays every role through the same tools a real agent uses, and a fake web. |
@@ -77,6 +77,27 @@ one per option) → `repair` (each author, one round: repair or withdraw) →
 
 A failed judgement escalates. It never loops back.
 
+## Agents talk: the message board
+
+Agents have identity. Each agent born for a problem gets its own Claude Code
+session in its own working directory, registers itself in the agent index
+with the topics it covers, and is woken by resuming that session whenever
+the board has mail for it. Agents die with their problem: sessions and
+directories are deleted at close.
+
+Messages are typed (question, finding, objection, request, answer), carry
+references by id, and are either addressed to one agent or routed by topic.
+Routing is done by code against registered topics: at most two recipients,
+most overlap first, readers and thinkers before the critic, the lead last.
+The supervisor wakes recipients inside the working stages (plan, read,
+verify, premortem, repair), interleaved with reader dispatch, at most three
+agents at a time. Idea divergence stays blind; from synthesis on the board
+is read-only for the synthesizer and invisible to the judge.
+
+A thread has a 200,000-token budget charged from the wakes it causes and
+closes when spent. There is no reply limit. The problem page shows every
+thread as a message feed, one bubble per real message, plus the agent index.
+
 ## Rules the code enforces
 
 - Posts missing a field, with fewer than 3 or more than 7 must-answer items,
@@ -121,3 +142,7 @@ real ceiling rather than its price. Repeat monthly.
 - Token accounting counts cache reads at full weight. Conservative on purpose.
 - The critic is a different tier from the author, not a different vendor.
 - The board has no authentication. Keep it on loopback or a private network.
+- Agent sessions hold raw web content while a problem runs. They live under
+  the CLI's project directory and `agent_dir` until the problem closes.
+- Two agents that answer each other's answers burn a thread's budget and
+  stop there; the deadline is the outer bound on the board as a whole.

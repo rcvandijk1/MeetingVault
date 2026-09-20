@@ -5,21 +5,31 @@ through a fixed list of stages; the stage reached is recorded on the
 problem, so a crash, a rate-limit pause or a restart resumes where it
 stopped instead of re-spending tokens. A failed judgement escalates; it
 never loops back automatically (section 5).
+
+Agents have identity. Each agent born for a problem gets one Claude Code
+session in its own working directory, registers itself in the agent index,
+and is resumed (woken) whenever the message board has something for it.
+The working stages run an event loop: dispatch open tasks to new readers
+and deliver pickups to existing agents, at most three agents at a time,
+until nothing is open and nobody has unread mail in a thread with budget.
+Agents die with their problem: sessions and working directories are deleted.
 """
 from __future__ import annotations
 
-import json
 import logging
+import re
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from . import prompts, verify
 from .config import Config
 from .db import init_db, now_iso
 from .governor import Governor
-from .ledger import IDEAS, RESEARCH, Ledger, LedgerError, Usage
+from .ledger import RESEARCH, Ledger, LedgerError, Usage
 from .runner import ClaudeCodeRunner, Runner, RunResult, RunSpec
 
 log = logging.getLogger("thinktank")
@@ -33,6 +43,8 @@ BUILTIN_TOOLS = {
     "synthesizer": (),
     "judge": (),
 }
+# Tools an agent gets when woken by the board, by role.
+WAKE_TOOLS = {"reader": "reader", "lead": "lead", "thinker": "thinker", "critic": "critic_verify", "synthesizer": "synthesizer"}
 
 
 class Stop(Exception):
@@ -41,6 +53,25 @@ class Stop(Exception):
 
 class RateLimited(Exception):
     """A run hit a rate limit; pause and queue, never retry in a tight loop."""
+
+
+def _slug(text: str, n: int = 24) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s[:n].rstrip("-") or "agent"
+
+
+def _seed_topics(*texts: str) -> list[str]:
+    words = []
+    for t in texts:
+        for w in re.findall(r"[a-zA-Z][a-zA-Z0-9\-]{3,}", t or ""):
+            w = w.lower()
+            if w not in words and w not in _STOP:
+                words.append(w)
+    return words[:8]
+
+
+_STOP = {"which", "what", "that", "this", "with", "from", "their", "there", "into", "about", "does", "have", "will", "should",
+         "must", "answer", "list", "sources", "dated", "primary", "older", "than", "months", "year", "years", "each", "every"}
 
 
 class Supervisor:
@@ -69,16 +100,20 @@ class Supervisor:
             for name, fn in stages[start:]:
                 self._guard(pid)
                 L.set_status(pid, STATUS_FOR_STAGE.get(name, "working"), stage=None)
+                L.conn.execute("UPDATE problems SET stage_now=?, updated_at=? WHERE id=?", (name, now_iso(), pid))
                 log.info("problem %s: stage %s", pid, name)
                 fn(self, pid)
                 L.conn.execute("UPDATE problems SET stage=?, updated_at=? WHERE id=?", (name, now_iso(), pid))
-            return L.get_problem(pid)["status"]
+            status = L.get_problem(pid)["status"]
         except RateLimited as e:
             L.defer(pid, self.config.rate_limit_pause_seconds, f"rate limited: {e}")
             return "queued"
         except Stop as e:
             self._escalate(pid, str(e))
-            return "escalated"
+            status = "escalated"
+        if status in ("passed", "escalated"):
+            self._retire(pid)
+        return status
 
     def daemon(self, once: bool = False, sleep: Callable[[float], None] = time.sleep) -> None:
         """Poll the inbox board; run problems inside the run window, one at a
@@ -104,7 +139,8 @@ class Supervisor:
 
     def recover(self) -> None:
         """After a crash: runs left 'running' are dead, their leases are void,
-        and problems mid-flight go back to the queue at their recorded stage."""
+        and problems mid-flight go back to the queue at their recorded stage.
+        Agents keep their sessions and are woken as before."""
         L = self.ledger
         dead = L._all("SELECT id, problem_id, task_id FROM runs WHERE status='running'")
         for r in dead:
@@ -133,29 +169,107 @@ class Supervisor:
             return start <= cur < end
         return cur >= start or cur < end
 
-    # ------------------------------------------------------------ spawning
+    # ------------------------------------------------------------ guards
     def _guard(self, pid: str) -> None:
         reason = self.governor.stop_reason(self.ledger.get_problem(pid))
         if reason:
             raise Stop(reason)
 
-    def _run(self, L: Ledger, pid: str, *, role: str, stage: str, system_prompt: str, extra: dict | None = None,
-             tools_key: str | None = None, task_id: str | None = None, slot: int | None = None, round_no: int = 1,
-             slice_tokens: int | None = None) -> tuple[str, RunResult]:
+    # ------------------------------------------------------------ agent lifecycle
+    def _workdir(self, pid: str, name: str) -> str:
+        return str(Path(self.config.agent_dir).resolve() / pid / name)
+
+    def _born(self, L: Ledger, pid: str, *, role: str, name: str, task_id: str | None = None, slot: int | None = None,
+              topics: list[str] | None = None) -> dict:
+        taken = {a["name"] for a in L.list_agents(pid, alive_only=False)}
+        base, n = name, 2
+        while name in taken:
+            name = f"{base}-{n}"
+            n += 1
+        aid = L.born(pid, role=role, name=name, session_id=str(uuid.uuid4()), workdir=self._workdir(pid, name),
+                     model=self.config.model_for(role), task_id=task_id, slot=slot, topics=topics)
+        return L.get_agent(aid)
+
+    def _agent(self, L: Ledger, pid: str, role: str, *, name: str | None = None, task_id: str | None = None,
+               slot: int | None = None, topics: list[str] | None = None) -> tuple[dict, bool]:
+        """The alive agent for this role/task/slot, or a newborn. Returns
+        (agent, is_new); an agent whose first run never established a
+        session (rate limited, binary missing) counts as new."""
+        a = L.agent_for_run(pid, role=role, task_id=task_id, slot=slot)
+        if a:
+            return a, not a["session_ready"]
+        return self._born(L, pid, role=role, name=name or role, task_id=task_id, slot=slot, topics=topics), True
+
+    def _execute(self, L: Ledger, agent: dict, spec: RunSpec, *, wake: bool) -> tuple[str, RunResult]:
+        pid = agent["problem_id"]
+        waiting = L.pickups_waiting(agent["id"]) if wake else []
+        run_id = L.start_run(pid, role=agent["role"], model=agent["model"], task_id=agent["task_id"], slot=agent["slot"], agent_id=agent["id"])
+        spec.run_id = run_id
+        res = self.runner.run(spec, on_fetch=lambda kind, url: L.log_fetch(run_id, pid, agent["role"], kind, url))
+        L.finish_run(run_id, status=res.status, usage=res.usage, session_id=res.session_id, error=res.error)
+        established = res.status != "rate_limited" and bool(res.session_id or res.status == "ok")
+        L.charge_agent(agent["id"], res.usage.total, wake=wake, session_ready=established)
+        if wake:
+            served = L.settle_pickups(agent["id"], waiting)
+            L.charge_threads(served, res.usage.total)
+        if res.status == "rate_limited":
+            raise RateLimited(res.error or "rate limited")
+        return run_id, res
+
+    def _spawn(self, L: Ledger, agent: dict, *, stage: str, system_prompt: str, extra: dict | None = None,
+               tools_key: str | None = None, round_no: int = 1, slice_tokens: int | None = None) -> tuple[str, RunResult]:
+        """An agent's first run: creates its session."""
+        p = L.get_problem(agent["problem_id"])
+        spec = RunSpec(
+            role=agent["role"], stage=stage, problem_id=p["id"], run_id="", model=agent["model"],
+            system_prompt=system_prompt, user_prompt=prompts.user_prompt(agent["role"], stage, p, extra),
+            builtin_tools=BUILTIN_TOOLS[tools_key or agent["role"]], task_id=agent["task_id"], slot=agent["slot"], round_no=round_no,
+            max_usd=self.governor.run_max_usd(p, agent["model"], slice_tokens), timeout_seconds=self.config.run_timeout_seconds,
+            agent_id=agent["id"], session_id=agent["session_id"], resume=False, workdir=agent["workdir"],
+        )
+        return self._execute(L, agent, spec, wake=False)
+
+    def _wake(self, L: Ledger, agent: dict, *, stage: str, prompt: str, tools_key: str | None = None, round_no: int = 1,
+              slice_tokens: int | None = None) -> tuple[str, RunResult]:
+        """Resume an agent's session with a new message."""
+        p = L.get_problem(agent["problem_id"])
+        spec = RunSpec(
+            role=agent["role"], stage=stage, problem_id=p["id"], run_id="", model=agent["model"],
+            system_prompt="", user_prompt=prompt,
+            builtin_tools=BUILTIN_TOOLS[tools_key or WAKE_TOOLS.get(agent["role"], agent["role"])], task_id=agent["task_id"],
+            slot=agent["slot"], round_no=round_no,
+            max_usd=self.governor.run_max_usd(p, agent["model"], slice_tokens), timeout_seconds=self.config.run_timeout_seconds,
+            agent_id=agent["id"], session_id=agent["session_id"], resume=True, workdir=agent["workdir"],
+        )
+        return self._execute(L, agent, spec, wake=True)
+
+    def _ephemeral(self, L: Ledger, pid: str, *, role: str, stage: str, system_prompt: str, extra: dict | None = None) -> tuple[str, RunResult]:
+        """A run with no identity and no session: the judge."""
         p = L.get_problem(pid)
         model = self.config.model_for(role)
-        run_id = L.start_run(pid, role=role, model=model, task_id=task_id, slot=slot)
-        spec = RunSpec(
-            role=role, stage=stage, problem_id=pid, run_id=run_id, model=model,
-            system_prompt=system_prompt, user_prompt=prompts.user_prompt(role, stage, p, extra),
-            builtin_tools=BUILTIN_TOOLS[tools_key or role], task_id=task_id, slot=slot, round_no=round_no,
-            max_usd=self.governor.run_max_usd(p, model, slice_tokens), timeout_seconds=self.config.run_timeout_seconds,
-        )
+        run_id = L.start_run(pid, role=role, model=model)
+        spec = RunSpec(role=role, stage=stage, problem_id=pid, run_id=run_id, model=model, system_prompt=system_prompt,
+                       user_prompt=prompts.user_prompt(role, stage, p, extra), builtin_tools=BUILTIN_TOOLS[role],
+                       max_usd=self.governor.run_max_usd(p, model), timeout_seconds=self.config.run_timeout_seconds)
         res = self.runner.run(spec, on_fetch=lambda kind, url: L.log_fetch(run_id, pid, role, kind, url))
         L.finish_run(run_id, status=res.status, usage=res.usage, session_id=res.session_id, error=res.error)
         if res.status == "rate_limited":
             raise RateLimited(res.error or "rate limited")
         return run_id, res
+
+    def _retire(self, pid: str) -> None:
+        L = self.ledger
+        L.close_threads(pid, "problem closed")
+        for a in L.retire_agents(pid):
+            deleter = getattr(self.runner, "delete_agent", None)
+            if deleter:
+                deleter(a["workdir"], a["session_id"])
+        try:
+            d = Path(self.config.agent_dir).resolve() / pid
+            if d.exists() and not any(d.iterdir()):
+                d.rmdir()
+        except OSError:
+            pass
 
     def _parallel(self, jobs: list[Callable[[Ledger], object]]) -> list[object]:
         """Run jobs on their own ledger connections, at most max_concurrent_agents at once."""
@@ -177,71 +291,67 @@ class Supervisor:
             raise rate_limited[0]
         return results
 
-    # ------------------------------------------------------------ research stages
-    def stage_plan(self, pid: str) -> None:
-        L = self.ledger
-        if L.list_tasks(pid):
-            return
-        remaining = self.governor.remaining_tokens(L.get_problem(pid))
-        self._run(L, pid, role="lead", stage="plan", system_prompt=prompts.LEAD,
-                  extra={"Remaining token cap": "none (spend is shown, not capped)" if remaining is None else remaining})
-        if not L.list_tasks(pid):
-            # Deterministic fallback: the lead produced no plan, so one subtask per must-answer item.
-            p = L.get_problem(pid)
-            items = p["must_answer"]
-            remaining = self.governor.remaining_tokens(p)
-            slice_tokens = 200_000 if remaining is None else max(int(remaining * 0.5 / max(len(items), 1)), 1)
-            for item in items:
-                L.create_task(pid, title=item, criteria=f"Answer '{item}' with dated, quoted sources meeting: {p['evidence_standard']}",
-                              budget_tokens=slice_tokens, merge_owner="supervisor")
-            L.event(pid, "plan_fallback", f"lead produced no subtasks; created {len(items)} from the must-answer list")
-
-    def stage_read(self, pid: str) -> None:
+    # ------------------------------------------------------------ the event loop
+    def _pump(self, pid: str, *, stage: str, dispatch_readers: bool) -> None:
+        """Interleave new reader dispatch with message pickups until the
+        board is quiet: no open leaf task, no agent with unread mail in an
+        open thread. Bounded by thread budgets, the deadline and the cap."""
         L = self.ledger
         while True:
             L.expire_leases(pid)
-            tasks = L.list_tasks(pid)
-            parents = {t["parent_id"] for t in tasks if t["parent_id"]}
-            open_leaves = [t for t in tasks if t["status"] == "open" and t["id"] not in parents]
-            if not open_leaves:
+            jobs: list[Callable[[Ledger], None]] = []
+            busy: set[str] = set()
+            if dispatch_readers:
+                tasks = L.list_tasks(pid)
+                parents = {t["parent_id"] for t in tasks if t["parent_id"]}
+                for t in [t for t in tasks if t["status"] == "open" and t["id"] not in parents]:
+                    if len(jobs) >= self.config.max_concurrent_agents:
+                        break
+                    existing = L.agent_for_run(pid, role="reader", task_id=t["id"])
+                    if existing:
+                        busy.add(existing["id"])
+                    jobs.append(self._reader_job(pid, t))
+            for pk in L.pending_pickups(pid):
+                if len(jobs) >= self.config.max_concurrent_agents:
+                    break
+                if pk["agent_id"] in busy:
+                    continue
+                busy.add(pk["agent_id"])
+                jobs.append(self._wake_job(pid, pk["agent_id"], stage, pk["count"]))
+            if not jobs:
                 break
             self._guard(pid)
-            batch = open_leaves[: self.config.max_concurrent_agents]
-            for t in batch:
-                L.event(pid, "dispatch", f"{t['id']} to a reader")
-            self._parallel([self._reader_job(pid, t) for t in batch])
-        # A parent whose children are all closed is merged by the synthesizer; mark it.
-        for t in L.list_tasks(pid):
-            if t["id"] in parents and t["status"] == "open":
-                children = [c for c in L.list_tasks(pid) if c["parent_id"] == t["id"]]
-                if all(c["status"] in ("done", "escalated") for c in children):
-                    L.finish_task(t["id"], f"merged from {len(children)} subtasks")
-        if not L.list_notes(pid):
-            raise Stop("no reader produced a single note")
+            self._parallel(jobs)
+
+    def _wake_job(self, pid: str, aid: str, stage: str, count: int) -> Callable[[Ledger], None]:
+        def job(L: Ledger) -> None:
+            agent = L.get_agent(aid)
+            L.event(pid, "wake", f"{agent['name']} for {count} message(s)")
+            self._wake(L, agent, stage="wake", prompt=prompts.wake_prompt(stage, count))
+        return job
 
     def _reader_job(self, pid: str, task: dict) -> Callable[[Ledger], None]:
         def job(L: Ledger) -> None:
-            run_id = L.start_run(pid, role="reader", model=self.config.model_for("reader"), task_id=task["id"])
+            agent, is_new = self._agent(L, pid, "reader", name=f"reader-{_slug(task['title'])}", task_id=task["id"],
+                                        topics=_seed_topics(task["title"], task["criteria"]))
             try:
-                L.lease_task(task["id"], run_id)
+                L.lease_task(task["id"], agent["id"])
             except LedgerError as e:
-                L.finish_run(run_id, status="error", usage=Usage(), error=str(e))
+                L.event(pid, "dispatch_skipped", f"{task['id']}: {e}")
                 return
+            L.event(pid, "dispatch", f"{task['id']} to {agent['name']}" + ("" if is_new else " (woken)"))
             p = L.get_problem(pid)
-            model = self.config.model_for("reader")
-            spec = RunSpec(
-                role="reader", stage="read", problem_id=pid, run_id=run_id, model=model,
-                system_prompt=prompts.READER,
-                user_prompt=prompts.user_prompt("reader", "read", p, {"Your sub-question": task["title"], "Its acceptance criteria": task["criteria"]}),
-                builtin_tools=BUILTIN_TOOLS["reader"], task_id=task["id"],
-                max_usd=self.governor.run_max_usd(p, model, task["budget_tokens"]), timeout_seconds=self.config.run_timeout_seconds,
-            )
-            res = self.runner.run(spec, on_fetch=lambda kind, url: L.log_fetch(run_id, pid, "reader", kind, url))
-            L.finish_run(run_id, status=res.status, usage=res.usage, session_id=res.session_id, error=res.error)
-            t = L.get_task(task["id"])
-            if res.status == "rate_limited":
+            extra = {"Your sub-question": task["title"], "Its acceptance criteria": task["criteria"]}
+            try:
+                if is_new:
+                    _, res = self._spawn(L, agent, stage="read", system_prompt=prompts.READER, extra=extra, slice_tokens=task["budget_tokens"])
+                else:
+                    _, res = self._wake(L, agent, stage="read", tools_key="reader", slice_tokens=task["budget_tokens"],
+                                        prompt=f"Your previous attempt at your sub-question did not complete. Continue: post the notes you can and call finish_task. {prompts.WAKE}")
+            except RateLimited:
                 L.conn.execute("UPDATE tasks SET status='open', owner_run_id=NULL, lease_expires_at=NULL, lease_count=lease_count-1 WHERE id=?", (task["id"],))
-                raise RateLimited(res.error or "rate limited")
+                raise
+            t = L.get_task(task["id"])
             if t["status"] != "leased":
                 return  # the reader closed it through the ledger
             notes = L.list_notes(pid, task_id=task["id"])
@@ -251,26 +361,73 @@ class Supervisor:
                 L.release_task(task["id"], f"run {res.status}: {(res.error or 'no notes posted')[:200]}", res.usage.total)
         return job
 
-    def stage_verify(self, pid: str) -> None:
-        """Two passes. First the supervisor checks by code that each quote is
-        on its page; a quote that is not there is not evidence and the note is
-        rejected before any model sees it. Then the critic judges what needs
-        judgement: date and whether the quote supports the claim."""
+    # ------------------------------------------------------------ research stages
+    def stage_plan(self, pid: str) -> None:
         L = self.ledger
-        self.check_quotes(pid)
-        for _ in range(2):
+        if L.list_tasks(pid):
+            return
+        p = L.get_problem(pid)
+        lead, _ = self._agent(L, pid, "lead", name="lead", topics=_seed_topics(p["question"], " ".join(p["must_answer"])))
+        remaining = self.governor.remaining_tokens(p)
+        self._spawn(L, lead, stage="plan", system_prompt=prompts.LEAD,
+                    extra={"Remaining token cap": "none (spend is shown, not capped)" if remaining is None else remaining})
+        if not L.list_tasks(pid):
+            # Deterministic fallback: the lead produced no plan, so one subtask per must-answer item.
+            items = p["must_answer"]
+            remaining = self.governor.remaining_tokens(p)
+            slice_tokens = 200_000 if remaining is None else max(int(remaining * 0.5 / max(len(items), 1)), 1)
+            for item in items:
+                L.create_task(pid, title=item, criteria=f"Answer '{item}' with dated, quoted sources meeting: {p['evidence_standard']}",
+                              budget_tokens=slice_tokens, merge_owner=lead["id"])
+            L.event(pid, "plan_fallback", f"lead produced no subtasks; created {len(items)} from the must-answer list")
+
+    def stage_read(self, pid: str) -> None:
+        L = self.ledger
+        self._pump(pid, stage="read", dispatch_readers=True)
+        tasks = L.list_tasks(pid)
+        parents = {t["parent_id"] for t in tasks if t["parent_id"]}
+        for t in tasks:
+            if t["id"] in parents and t["status"] == "open":
+                children = [c for c in tasks if c["parent_id"] == t["id"]]
+                if all(c["status"] in ("done", "escalated") for c in children):
+                    L.finish_task(t["id"], f"merged from {len(children)} subtasks")
+        if not L.list_notes(pid):
+            raise Stop("no reader produced a single note")
+
+    def stage_verify(self, pid: str) -> None:
+        """Three passes, interleaved with the board. (a) The supervisor checks
+        by code that each quote is on its page; a failed quote rejects the
+        note before any model sees it. (b) The critic judges date and
+        context. (c) Objections the critic addressed to readers wake them;
+        new notes go through (a) and a second critic run."""
+        L = self.ledger
+        p = L.get_problem(pid)
+        critic, is_new = self._agent(L, pid, "critic", name="critic", topics=["verification"] + _seed_topics(p["question"]))
+        for round_no in (1, 2):
+            self.check_quotes(pid)
             if not L.list_notes(pid, status="unverified", quote_checked=True):
                 break
             self._guard(pid)
-            self._run(L, pid, role="critic", stage="verify", system_prompt=prompts.CRITIC_VERIFY, tools_key="critic_verify", round_no=1)
+            if is_new:
+                self._spawn(L, critic, stage="verify", system_prompt=prompts.CRITIC_VERIFY, tools_key="critic_verify", round_no=round_no)
+                is_new = False
+            else:
+                self._wake(L, critic, stage="verify", tools_key="critic_verify", round_no=round_no,
+                           prompt=f"New notes await verification (round {round_no}). Call list_notes with status unverified and verify each as before. {prompts.WAKE}")
+            # Readers the critic objected to get a chance to find a better source.
+            self._pump(pid, stage="verify", dispatch_readers=True)
         for n in L.list_notes(pid, status="unverified"):
-            L.verify_note(n["id"], verified=False, reason="not verified within the critic's budget", run_id="supervisor")
+            if not n["quote_check"]:
+                self.check_quotes(pid)
+                n = L.get_note(n["id"])
+            if n["status"] == "unverified":
+                L.verify_note(n["id"], verified=False, reason="not verified within the critic's budget", run_id="supervisor")
         if not L.claims_for_problem(pid):
             raise Stop("no note survived verification")
 
     def check_quotes(self, pid: str) -> dict[str, int]:
         """Mechanical quote check for every unverified note that has none yet.
-        Pages are fetched once per URL. Every fetch is logged."""
+        Pages are fetched once per call. Every fetch is logged."""
         L = self.ledger
         counts = {"pass": 0, "fail": 0, "unsupported": 0}
         cache: dict[str, verify.Fetched] = {}
@@ -287,15 +444,18 @@ class Supervisor:
             result, detail = verify.check_quote(n["url"], n["quote"], fetcher=fetch)
             L.set_quote_check(n["id"], result, detail)
             counts[result] += 1
-        L.event(pid, "quote_check_done", ", ".join(f"{k} {v}" for k, v in counts.items()))
+        if sum(counts.values()):
+            L.event(pid, "quote_check_done", ", ".join(f"{k} {v}" for k, v in counts.items()))
         return counts
 
     def stage_synthesize(self, pid: str) -> None:
         L = self.ledger
         if L.latest_deliverable(pid):
             return
-        prompt = prompts.SYNTHESIZER_RESEARCH if L.get_problem(pid)["mode"] == RESEARCH else prompts.SYNTHESIZER_IDEAS
-        self._run(L, pid, role="synthesizer", stage="synthesize", system_prompt=prompt)
+        p = L.get_problem(pid)
+        prompt = prompts.SYNTHESIZER_RESEARCH if p["mode"] == RESEARCH else prompts.SYNTHESIZER_IDEAS
+        synth, _ = self._agent(L, pid, "synthesizer", name="synthesizer", topics=_seed_topics(p["question"]))
+        self._spawn(L, synth, stage="synthesize", system_prompt=prompt)
         if not L.latest_deliverable(pid):
             raise Stop("synthesizer submitted no deliverable")
 
@@ -303,7 +463,11 @@ class Supervisor:
         L = self.ledger
         if L.list_critiques(pid, "deliverable"):
             return
-        self._run(L, pid, role="critic", stage="critique", system_prompt=prompts.CRITIC_DELIVERABLE, round_no=2)
+        critic, is_new = self._agent(L, pid, "critic", name="critic")
+        if is_new:
+            self._spawn(L, critic, stage="critique", system_prompt=prompts.CRITIC_DELIVERABLE, round_no=2)
+        else:
+            self._wake(L, critic, stage="critique", tools_key="critic", round_no=2, prompt=prompts.CRITIC_DELIVERABLE)
         if not L.list_critiques(pid, "deliverable"):
             L.event(pid, "critique_missing", "critic posted no critique; deliverable stands")
 
@@ -315,8 +479,12 @@ class Supervisor:
         if not d or d["version"] >= 2 or not objections:
             return
         self._guard(pid)
-        self._run(L, pid, role="synthesizer", stage="revise", system_prompt=prompts.SYNTHESIZER_RESEARCH,
-                  extra={"Revision": f"The critic raised {len(objections)} objections; answer each or list the item as unanswered."})
+        synth, is_new = self._agent(L, pid, "synthesizer", name="synthesizer")
+        revision = f"The critic raised {len(objections)} objections; answer each or list the item as unanswered, then submit a new deliverable version."
+        if is_new:
+            self._spawn(L, synth, stage="revise", system_prompt=prompts.SYNTHESIZER_RESEARCH, extra={"Revision": revision})
+        else:
+            self._wake(L, synth, stage="revise", tools_key="synthesizer", prompt=f"Revision round. Call list_critiques and get_deliverable. {revision}")
 
     def stage_judge(self, pid: str) -> None:
         L = self.ledger
@@ -326,7 +494,7 @@ class Supervisor:
         v = L.latest_verdict(pid)
         if v and v["deliverable_id"] == d["id"]:
             return
-        self._run(L, pid, role="judge", stage="judge", system_prompt=prompts.JUDGE)
+        self._ephemeral(L, pid, role="judge", stage="judge", system_prompt=prompts.JUDGE)
         v = L.latest_verdict(pid)
         if not v or v["deliverable_id"] != d["id"]:
             raise Stop("judge returned no verdict")
@@ -347,12 +515,14 @@ class Supervisor:
         L = self.ledger
         if L.list_options(pid):
             return
+        p = L.get_problem(pid)
         n = max(2, min(self.config.idea_thinkers, self.config.max_concurrent_agents))
 
         def job_for(slot: int):
             def job(Lx: Ledger):
-                self._run(Lx, pid, role="thinker", stage="diverge", system_prompt=prompts.THINKER_DIVERGE,
-                          extra={"You are thinker": f"{slot + 1} of {n}, working blind"}, slot=slot)
+                thinker, _ = self._agent(Lx, pid, "thinker", name=f"thinker-{slot + 1}", slot=slot, topics=_seed_topics(p["question"]))
+                self._spawn(Lx, thinker, stage="diverge", system_prompt=prompts.THINKER_DIVERGE,
+                            extra={"You are thinker": f"{slot + 1} of {n}, working blind"})
             return job
 
         self._parallel([job_for(s) for s in range(n)])
@@ -361,26 +531,39 @@ class Supervisor:
 
     def stage_premortem(self, pid: str) -> None:
         L = self.ledger
-        if all(o["premortem"] for o in L.list_options(pid, include_withdrawn=False)):
-            return
-        self._run(L, pid, role="critic", stage="premortem", system_prompt=prompts.CRITIC_PREMORTEM, round_no=1)
+        p = L.get_problem(pid)
+        if not all(o["premortem"] for o in L.list_options(pid, include_withdrawn=False)):
+            critic, is_new = self._agent(L, pid, "critic", name="critic", topics=["premortem"] + _seed_topics(p["question"]))
+            if is_new:
+                self._spawn(L, critic, stage="premortem", system_prompt=prompts.CRITIC_PREMORTEM, round_no=1)
+            else:
+                self._wake(L, critic, stage="premortem", tools_key="critic", prompt=f"New options await a premortem. {prompts.CRITIC_PREMORTEM}")
         for o in L.list_options(pid, include_withdrawn=False):
             if not o["premortem"]:
                 L.post_premortem(o["id"], "No premortem was written within the critic's budget; treat this option as unexamined.", "supervisor")
 
     def stage_repair(self, pid: str) -> None:
+        """Each author gets one repair round, woken in its own session so it
+        remembers why it proposed what it did. Then the board is open:
+        thinkers combine and contest, the critic answers objections."""
         L = self.ledger
         slots = sorted({o["author_slot"] for o in L.list_options(pid, include_withdrawn=False)})
         if not slots:
             raise Stop("every option was withdrawn before repair")
+        p = L.get_problem(pid)
 
         def job_for(slot: int):
             def job(Lx: Ledger):
-                self._run(Lx, pid, role="thinker", stage="repair", system_prompt=prompts.THINKER_REPAIR, slot=slot, round_no=2)
+                thinker, is_new = self._agent(Lx, pid, "thinker", name=f"thinker-{slot + 1}", slot=slot, topics=_seed_topics(p["question"]))
+                if is_new:
+                    self._spawn(Lx, thinker, stage="repair", system_prompt=prompts.THINKER_DIVERGE + "\n\n" + prompts.THINKER_REPAIR, round_no=2)
+                else:
+                    self._wake(Lx, thinker, stage="repair", tools_key="thinker", round_no=2, prompt=prompts.THINKER_REPAIR)
             return job
 
         self._guard(pid)
         self._parallel([job_for(s) for s in slots])
+        self._pump(pid, stage="repair", dispatch_readers=False)
         if not L.list_options(pid, include_withdrawn=False):
             raise Stop("every option was withdrawn after the premortem")
 
@@ -389,6 +572,19 @@ class Supervisor:
         L = self.ledger
         L.escalate(pid, reason, self.render_partial(pid))
         L.set_status(pid, "escalated", error=reason[:500])
+
+    def _board_lines(self, pid: str) -> list[str]:
+        L = self.ledger
+        threads = L.list_threads(pid)
+        if not threads:
+            return []
+        msgs = sum(len(t["messages"]) for t in threads)
+        open_q = [t for t in threads if t["messages"] and t["messages"][0]["kind"] == "question" and not any(m["kind"] == "answer" for m in t["messages"][1:])]
+        agents = L.list_agents(pid, alive_only=False)
+        lines = [f"## Message board ({len(threads)} threads, {msgs} messages, {len(agents)} agents)"]
+        for q in open_q:
+            lines.append(f"- Open question, unanswered: {q['subject']}")
+        return lines + [""]
 
     def render_partial(self, pid: str) -> str:
         L = self.ledger
@@ -419,7 +615,8 @@ class Supervisor:
             lines.append("## Options")
             for o in opts:
                 lines.append(f"- [{o['status']}] {o['title']}")
-        return "\n".join(lines)
+            lines.append("")
+        return "\n".join(lines + self._board_lines(pid))
 
     def render_reply(self, pid: str, d: dict) -> str:
         L = self.ledger
@@ -439,7 +636,7 @@ class Supervisor:
             head = f"## Verified claims ({len(claims)}, {len(single)} single-source"
             head += f", {len(unchecked)} with quote not machine-checked)" if unchecked else ")"
             lines += [head, *self._claim_lines(claims), ""]
-        return "\n".join(lines)
+        return "\n".join(lines + self._board_lines(pid))
 
     @staticmethod
     def _tokens_line(p: dict) -> str:

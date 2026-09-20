@@ -15,7 +15,8 @@ from thinktank.verify import Fetched
 
 @pytest.fixture
 def config(tmp_path):
-    return Config(db_path=str(tmp_path / "t.sqlite3"), rate_limit_pause_seconds=1, lease_seconds=60)
+    return Config(db_path=str(tmp_path / "t.sqlite3"), rate_limit_pause_seconds=1, lease_seconds=60,
+                  agent_dir=str(tmp_path / "agents"))
 
 
 # A stand-in for the web: every page carries the quotes the default crew posts.
@@ -78,7 +79,7 @@ class FakeRunner:
         self.calls.append(spec)
         L = Ledger(self.db_path, self.config)
         ctx = Context(role=spec.role, problem_id=spec.problem_id, run_id=spec.run_id, task_id=spec.task_id,
-                      slot=spec.slot, round_no=spec.round_no)
+                      slot=spec.slot, round_no=spec.round_no, agent_id=spec.agent_id)
 
         def call(name: str, **args):
             result, is_error = call_tool(L, ctx, name, args)
@@ -87,12 +88,14 @@ class FakeRunner:
             return result
 
         try:
-            fn = self.behaviours.get((spec.role, spec.stage)) or DEFAULTS[(spec.role, spec.stage)]
+            fn = self.behaviours.get((spec.role, spec.stage)) or DEFAULTS.get((spec.role, spec.stage)) or DEFAULTS[(spec.role, "wake")]
             res = fn(spec, call, on_fetch)
         finally:
             L.close()
         if res is None:
             res = RunResult(status="ok")
+        if res.status == "ok" and not res.session_id:
+            res.session_id = spec.session_id
         if res.usage.total == 0:
             res.usage = Usage(input_tokens=self.tokens_per_run, output_tokens=0, cost_usd=self.tokens_per_run / 1e6 * 5)
         return res
@@ -164,7 +167,18 @@ def thinker_repair(spec, call, on_fetch):
         call("withdraw_option", option_id=mine[1]["id"], reason="premortem is right")
 
 
+def wake_default(spec, call, on_fetch):
+    """A well-behaved wake: read the inbox, answer questions in their thread, ignore the rest."""
+    for m in call("read_inbox"):
+        if m["kind"] == "question":
+            call("post_message", kind="answer", body=f"Answer to: {m['body'][:60]}", to=m["from"], thread_id=m["thread_id"])
+
+
 DEFAULTS = {
+    ("reader", "wake"): wake_default,
+    ("lead", "wake"): wake_default,
+    ("thinker", "wake"): wake_default,
+    ("critic", "wake"): wake_default,
     ("lead", "plan"): lead_plan,
     ("reader", "read"): reader_read,
     ("critic", "verify"): critic_verify,

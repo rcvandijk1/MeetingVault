@@ -21,6 +21,34 @@ from .db import connect, now_iso
 RESEARCH, IDEAS = "research", "ideas"
 MODES = (RESEARCH, IDEAS)
 CLAIM_TYPES = ("price", "market_size", "capability", "company_fact", "historical", "other")
+MESSAGE_KINDS = ("question", "finding", "objection", "request", "answer")
+# Stages in which the board is open: the working stages, where the
+# supervisor wakes recipients. Divergence in ideas mode stays blind; from
+# synthesis on, threads are read (by synthesizer and critic) but not written.
+MESSAGING_STAGES = {"plan", "read", "verify", "premortem", "repair"}
+# Which roles may address which roles. Judge and synthesizer never send or receive.
+MAY_MESSAGE = {
+    "reader": {"reader", "lead", "critic"},
+    "lead": {"reader", "lead", "critic"},
+    "thinker": {"thinker", "critic"},
+    "critic": {"reader", "lead", "thinker"},
+}
+
+
+ROLE_PRIORITY = {"reader": 0, "thinker": 0, "critic": 1, "lead": 2}
+
+
+def split_topics(raw: str | list | None) -> list[str]:
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = re.split(r"[,\n;]+", raw or "")
+    out = []
+    for t in items:
+        t = re.sub(r"\s+", " ", str(t).strip().lower())
+        if t and t not in out:
+            out.append(t)
+    return out[:20]
 
 _URL_RE = re.compile(r"^https?://[^\s]+$")
 
@@ -70,6 +98,17 @@ class Usage:
     @property
     def total(self) -> int:
         return self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_create_tokens
+
+
+def _topic_overlap(a: list[str], b: list[str]) -> int:
+    """Count of shared topics, where one topic containing the other counts."""
+    n = 0
+    for x in a:
+        for y in b:
+            if x == y or (len(x) >= 4 and x in y) or (len(y) >= 4 and y in x):
+                n += 1
+                break
+    return n
 
 
 class Ledger:
@@ -572,11 +611,12 @@ class Ledger:
         return dict(row) if row else None
 
     # ------------------------------------------------------------ runs and metering
-    def start_run(self, pid: str, *, role: str, model: str, task_id: str | None = None, slot: int | None = None) -> str:
+    def start_run(self, pid: str, *, role: str, model: str, task_id: str | None = None, slot: int | None = None,
+                  agent_id: str | None = None) -> str:
         rid = new_id("r")
         self.conn.execute(
-            "INSERT INTO runs(id, problem_id, task_id, role, model, slot, status, started_at) VALUES (?,?,?,?,?,?,?,?)",
-            (rid, pid, task_id, role, model, slot, "running", now_iso()),
+            "INSERT INTO runs(id, problem_id, task_id, role, model, slot, agent_id, status, started_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            (rid, pid, task_id, role, model, slot, agent_id, "running", now_iso()),
         )
         self.event(pid, "run_started", f"{rid} {role} ({model})" + (f" task {task_id}" if task_id else ""))
         return rid
@@ -630,6 +670,254 @@ class Ledger:
         if rate is None:
             rate = max(self.config.usd_per_million_tokens.values())
         return tokens / 1_000_000 * rate
+
+    # ------------------------------------------------------------ agent index
+    def born(self, pid: str, *, role: str, name: str, session_id: str, workdir: str, model: str,
+             task_id: str | None = None, slot: int | None = None, topics: list[str] | None = None) -> str:
+        """The supervisor records a birth. The agent then completes its own
+        registration with register_self (topics and a one-line brief)."""
+        aid = new_id("a")
+        self.conn.execute(
+            """INSERT INTO agents(id, problem_id, role, name, task_id, slot, topics, session_id, workdir, model, born_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (aid, pid, role, name, task_id, slot, ",".join(split_topics(topics or [])), session_id, workdir, model, now_iso()),
+        )
+        self.event(pid, "agent_born", f"{aid} {name} ({role})")
+        return aid
+
+    def register_self(self, aid: str, *, topics: str | list, brief: str) -> dict:
+        a = self.get_agent(aid)
+        tops = split_topics(topics)
+        if not tops:
+            raise LedgerError("register at least one topic")
+        merged = split_topics(list(a["topics"]) + tops)
+        self.conn.execute("UPDATE agents SET topics=?, brief=?, registered=1 WHERE id=?", (",".join(merged), (brief or "").strip()[:400], aid))
+        self.event(a["problem_id"], "agent_registered", f"{aid} {a['name']}: {', '.join(merged)}")
+        return self.get_agent(aid)
+
+    def get_agent(self, aid: str) -> dict:
+        row = self._one("SELECT * FROM agents WHERE id=?", aid)
+        if not row:
+            raise LedgerError(f"unknown agent {aid}")
+        d = dict(row)
+        d["topics"] = split_topics(d["topics"].split(","))
+        return d
+
+    def agent_for_run(self, pid: str, *, role: str, task_id: str | None = None, slot: int | None = None) -> dict | None:
+        sql, args = "SELECT * FROM agents WHERE problem_id=? AND role=? AND status='alive'", [pid, role]
+        if task_id:
+            sql += " AND task_id=?"
+            args.append(task_id)
+        if slot is not None:
+            sql += " AND slot=?"
+            args.append(slot)
+        row = self._one(sql + " ORDER BY born_at DESC LIMIT 1", *args)
+        return self.get_agent(row["id"]) if row else None
+
+    def list_agents(self, pid: str, alive_only: bool = True) -> list[dict]:
+        sql = "SELECT id FROM agents WHERE problem_id=?" + (" AND status='alive'" if alive_only else "") + " ORDER BY born_at"
+        return [self.get_agent(r["id"]) for r in self._all(sql, pid)]
+
+    def find_agent(self, pid: str, ref: str) -> dict | None:
+        """By id or by name, alive agents only."""
+        row = self._one("SELECT id FROM agents WHERE problem_id=? AND status='alive' AND (id=? OR name=?) LIMIT 1", pid, ref, ref)
+        return self.get_agent(row["id"]) if row else None
+
+    def charge_agent(self, aid: str, tokens: int, wake: bool = False, session_ready: bool | None = None) -> None:
+        self.conn.execute("UPDATE agents SET tokens_used=tokens_used+?, wakes=wakes+?, last_wake_at=CASE WHEN ? THEN ? ELSE last_wake_at END WHERE id=?",
+                          (int(tokens), 1 if wake else 0, 1 if wake else 0, now_iso(), aid))
+        if session_ready:
+            self.conn.execute("UPDATE agents SET session_ready=1 WHERE id=?", (aid,))
+
+    def retire_agents(self, pid: str) -> list[dict]:
+        agents = self.list_agents(pid)
+        self.conn.execute("UPDATE agents SET status='retired', retired_at=? WHERE problem_id=? AND status='alive'", (now_iso(), pid))
+        if agents:
+            self.event(pid, "agents_retired", f"{len(agents)} agents")
+        return agents
+
+    # ------------------------------------------------------------ message board
+    def messaging_open(self, pid: str) -> bool:
+        p = self.get_problem(pid)
+        return p["status"] not in ("passed", "escalated", "rejected") and (p["stage_now"] or "") in MESSAGING_STAGES
+
+    def post_message(self, pid: str, *, from_agent: str, kind: str, body: str, to_agent: str | None = None,
+                     topics: str | list | None = None, refs: list[str] | None = None, thread_id: str | None = None) -> dict:
+        """Post to the board. Addressed messages go to one recipient; topic
+        messages are routed by code to agents whose registered topics overlap.
+        Returns the message with its recipients."""
+        sender = self.get_agent(from_agent)
+        if sender["problem_id"] != pid:
+            raise LedgerError("agent belongs to another problem")
+        if not self.messaging_open(pid):
+            raise LedgerError("the message board is closed in this stage")
+        if kind not in MESSAGE_KINDS:
+            raise LedgerError(f"kind must be one of {', '.join(MESSAGE_KINDS)}")
+        body = (body or "").strip()
+        if not body:
+            raise LedgerError("body is required")
+        if len(body) > 3000:
+            raise LedgerError("message longer than 3000 characters; reference notes and claims by id instead of pasting them")
+        refs = [str(r) for r in (refs or []) if r][:20]
+        tops = split_topics(topics)
+        recipients: list[dict] = []
+        routing = ""
+        if to_agent:
+            target = self.find_agent(pid, to_agent)
+            if not target:
+                raise LedgerError(f"no alive agent {to_agent!r}; call list_agents for the index")
+            if target["id"] == sender["id"]:
+                raise LedgerError("cannot address yourself")
+            if target["role"] not in MAY_MESSAGE.get(sender["role"], set()):
+                raise LedgerError(f"a {sender['role']} may not address a {target['role']}")
+            recipients = [target]
+            routing = f"addressed to {target['name']}"
+        else:
+            if not tops:
+                raise LedgerError("address the message to an agent or give it topics")
+            scored = []
+            for a in self.list_agents(pid):
+                if a["id"] == sender["id"] or a["role"] not in MAY_MESSAGE.get(sender["role"], set()):
+                    continue
+                overlap = _topic_overlap(tops, a["topics"])
+                if overlap:
+                    scored.append((overlap, a))
+            # Most overlap first; on a tie the agents doing the work (readers,
+            # thinkers) before the critic, and the lead last.
+            scored.sort(key=lambda x: (-x[0], ROLE_PRIORITY.get(x[1]["role"], 9), x[1]["born_at"]))
+            recipients = [a for _, a in scored[: self.config.max_topic_matches]]
+            routing = f"topics {', '.join(tops)} -> " + (", ".join(a["name"] for a in recipients) if recipients else "no match")
+        # Thread
+        if thread_id:
+            th = self.get_thread(thread_id)
+            if th["problem_id"] != pid:
+                raise LedgerError("thread belongs to another problem")
+            if th["status"] != "open":
+                raise LedgerError(f"thread {thread_id} is closed: {th['closed_reason']}")
+            parent = self._one("SELECT id FROM messages WHERE thread_id=? ORDER BY created_at DESC LIMIT 1", thread_id)
+            parent_id = parent["id"] if parent else None
+        else:
+            thread_id = new_id("th")
+            self.conn.execute(
+                "INSERT INTO threads(id, problem_id, subject, topics, budget_tokens, created_at, updated_at) VALUES (?,?,?,?,?,?,?)",
+                (thread_id, pid, body[:120], ",".join(tops), self.config.thread_token_budget, now_iso(), now_iso()),
+            )
+            parent_id = None
+        mid = new_id("m")
+        self.conn.execute(
+            """INSERT INTO messages(id, problem_id, thread_id, parent_id, from_agent, to_agent, kind, body, refs, topics, routing, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (mid, pid, thread_id, parent_id, sender["id"], recipients[0]["id"] if to_agent else None, kind, body,
+             json.dumps(refs), ",".join(tops), routing, now_iso()),
+        )
+        for a in recipients:
+            self.conn.execute("INSERT OR IGNORE INTO pickups(message_id, agent_id, problem_id, created_at) VALUES (?,?,?,?)", (mid, a["id"], pid, now_iso()))
+        self.conn.execute("UPDATE threads SET updated_at=? WHERE id=?", (now_iso(), thread_id))
+        self.event(pid, "message", f"{mid} {sender['name']} [{kind}] {routing}: {body[:120]}")
+        return {"message_id": mid, "thread_id": thread_id, "recipients": [a["name"] for a in recipients], "routing": routing}
+
+    def get_thread(self, tid: str) -> dict:
+        row = self._one("SELECT * FROM threads WHERE id=?", tid)
+        if not row:
+            raise LedgerError(f"unknown thread {tid}")
+        d = dict(row)
+        d["artefacts"] = json.loads(d["artefacts"])
+        return d
+
+    def thread_messages(self, tid: str) -> list[dict]:
+        rows = self._all("SELECT m.*, a.name AS from_name, a.role AS from_role FROM messages m JOIN agents a ON a.id=m.from_agent WHERE m.thread_id=? ORDER BY m.created_at", tid)
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["refs"] = json.loads(d["refs"])
+            out.append(d)
+        return out
+
+    def list_threads(self, pid: str) -> list[dict]:
+        out = []
+        for r in self._all("SELECT id FROM threads WHERE problem_id=? ORDER BY created_at", pid):
+            th = self.get_thread(r["id"])
+            th["messages"] = self.thread_messages(th["id"])
+            out.append(th)
+        return out
+
+    def inbox(self, aid: str) -> list[dict]:
+        """Messages waiting for this agent, each with its thread so far.
+        Marks them delivered."""
+        rows = self._all(
+            "SELECT p.id AS pickup_id, m.* , a.name AS from_name, a.role AS from_role FROM pickups p JOIN messages m ON m.id=p.message_id JOIN agents a ON a.id=m.from_agent "
+            "WHERE p.agent_id=? AND p.status='pending' ORDER BY m.created_at", aid)
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["refs"] = json.loads(d["refs"])
+            d["thread"] = [{"from": m["from_name"], "kind": m["kind"], "body": m["body"]} for m in self.thread_messages(d["thread_id"]) if m["id"] != d["id"]]
+            self.conn.execute("UPDATE pickups SET status='delivered', delivered_at=? WHERE id=?", (now_iso(), r["pickup_id"]))
+            out.append(d)
+        return out
+
+    def pending_pickups(self, pid: str) -> list[dict]:
+        """Agents with undelivered messages in open threads with budget left."""
+        rows = self._all(
+            "SELECT p.agent_id, COUNT(*) n FROM pickups p JOIN messages m ON m.id=p.message_id JOIN threads t ON t.id=m.thread_id "
+            "JOIN agents a ON a.id=p.agent_id WHERE p.problem_id=? AND p.status='pending' AND t.status='open' AND a.status='alive' GROUP BY p.agent_id", pid)
+        return [{"agent_id": r["agent_id"], "count": int(r["n"])} for r in rows]
+
+    def pickups_waiting(self, aid: str) -> list[int]:
+        """Ids of this agent's pending pickups right now: what a wake is for."""
+        return [int(r["id"]) for r in self._all("SELECT id FROM pickups WHERE agent_id=? AND status='pending'", aid)]
+
+    def settle_pickups(self, aid: str, waiting: list[int]) -> list[str]:
+        """After a wake: the pickups the agent was woken for are done, read or
+        not (an agent that ignores its inbox is not woken again for the same
+        message), and so is anything it read during the run. Messages that
+        arrived while it was running stay pending for the next wake. Returns
+        the thread ids served, for charging."""
+        ids = list(waiting)
+        ids += [int(r["id"]) for r in self._all("SELECT id FROM pickups WHERE agent_id=? AND status='delivered'", aid)]
+        if not ids:
+            return []
+        marks = ",".join("?" * len(ids))
+        rows = self._all(f"SELECT DISTINCT m.thread_id FROM pickups p JOIN messages m ON m.id=p.message_id WHERE p.id IN ({marks})", *ids)
+        self.conn.execute(f"UPDATE pickups SET status='done' WHERE id IN ({marks})", ids)
+        return [r["thread_id"] for r in rows]
+
+    def charge_threads(self, thread_ids: list[str], tokens: int) -> list[str]:
+        """Split a wake's usage evenly over the threads it served; close any
+        thread whose budget is spent. Returns closed thread ids."""
+        closed = []
+        ids = [t for t in dict.fromkeys(thread_ids) if t]
+        if not ids:
+            return closed
+        share = int(tokens / len(ids))
+        for tid in ids:
+            self.conn.execute("UPDATE threads SET tokens_used=tokens_used+?, updated_at=? WHERE id=?", (share, now_iso(), tid))
+            th = self.get_thread(tid)
+            if th["status"] == "open" and th["tokens_used"] >= th["budget_tokens"]:
+                self.close_thread(tid, f"budget spent: {th['tokens_used']:,} of {th['budget_tokens']:,} tokens")
+                closed.append(tid)
+        return closed
+
+    def close_thread(self, tid: str, reason: str) -> None:
+        th = self.get_thread(tid)
+        self.conn.execute("UPDATE threads SET status='closed', closed_reason=?, updated_at=? WHERE id=?", (reason[:300], now_iso(), tid))
+        self.conn.execute("UPDATE pickups SET status='done' WHERE message_id IN (SELECT id FROM messages WHERE thread_id=?) AND status='pending'", (tid,))
+        self.event(th["problem_id"], "thread_closed", f"{tid}: {reason[:200]}")
+
+    def close_threads(self, pid: str, reason: str) -> int:
+        n = 0
+        for th in self.list_threads(pid):
+            if th["status"] == "open":
+                self.close_thread(th["id"], reason)
+                n += 1
+        return n
+
+    def link_artefact(self, tid: str, artefact_id: str) -> None:
+        th = self.get_thread(tid)
+        arts = th["artefacts"]
+        if artefact_id not in arts:
+            arts.append(artefact_id)
+            self.conn.execute("UPDATE threads SET artefacts=?, updated_at=? WHERE id=?", (json.dumps(arts), now_iso(), tid))
 
     # ------------------------------------------------------------ reply board, escalation queue
     def post_reply(self, pid: str, deliverable_id: str, body: str) -> str:

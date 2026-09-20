@@ -25,6 +25,12 @@ judge = "sonnet"
 # max_concurrent_agents = 3
 # idea_thinkers = 3
 
+# Message board. A thread closes when its token budget is spent; no reply limit.
+# thread_token_budget = 200000
+# max_topic_matches = 2
+# Where each agent's working directory and Claude Code session live until its problem closes.
+# agent_dir = "agents"
+
 # Only start problems in your off-hours (local time). Empty = any time.
 # run_window = "22:00-07:00"
 # poll_seconds = 30

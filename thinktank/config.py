@@ -46,6 +46,14 @@ class Config:
     max_split_depth: int = 2
     max_critique_rounds: int = 2
     idea_thinkers: int = 3
+    # Message board (agents communicate through addressed or topic-routed
+    # messages; the supervisor wakes recipients). A thread closes when its
+    # token budget is spent; there is no reply limit.
+    thread_token_budget: int = 200_000
+    max_topic_matches: int = 2
+    # Where each agent's working directory (and thus its Claude Code session)
+    # lives for the life of its problem. Deleted at problem close.
+    agent_dir: str = "agents"
     # Only start new problems inside this local-time window ("22:00-07:00").
     # Empty means any time.
     run_window: str = ""

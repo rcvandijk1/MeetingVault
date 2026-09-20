@@ -17,7 +17,10 @@ def test_role_scoping(ledger):
     result, err = call_tool(ledger, judge, "get_brief", {})
     assert not err and set(result) == {"mode", "question", "decision", "must_answer", "evidence_standard", "deliverable"}
     names = {t.name for t in tools_for_role("reader")}
-    assert names == {"get_task", "search_claims", "post_note", "finish_task"}
+    assert names == {"get_task", "search_claims", "post_note", "finish_task", "register_self", "list_agents", "post_message", "read_inbox", "get_thread"}
+    assert {t.name for t in tools_for_role("judge")} == {"get_brief", "get_deliverable", "submit_verdict"}
+    assert "post_message" not in {t.name for t in tools_for_role("synthesizer")}
+    assert "list_threads" in {t.name for t in tools_for_role("synthesizer")}
     assert all(t.roles for t in TOOLS.values())
 
 
@@ -59,7 +62,7 @@ def test_stdio_protocol_roundtrip(ledger, config, monkeypatch):
     serve(io.StringIO("\n".join(json.dumps(m) for m in msgs) + "\n"), out, env)
     replies = [json.loads(l) for l in out.getvalue().splitlines()]
     assert replies[0]["result"]["protocolVersion"] == "2025-06-18"
-    assert {t["name"] for t in replies[1]["result"]["tools"]} == {"get_task", "search_claims", "post_note", "finish_task"}
+    assert {"get_task", "search_claims", "post_note", "finish_task", "register_self", "post_message"} <= {t["name"] for t in replies[1]["result"]["tools"]}
     assert replies[2]["result"]["isError"] is False and json.loads(replies[2]["result"]["content"][0]["text"])["task_id"] == tid
     assert replies[3]["result"]["isError"] is True
     assert replies[4]["error"]["code"] == -32601
