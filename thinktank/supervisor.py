@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -117,25 +118,53 @@ class Supervisor:
 
     def daemon(self, once: bool = False, sleep: Callable[[float], None] = time.sleep) -> None:
         """Poll the inbox board; run problems inside the run window, one at a
-        time (concurrency lives inside a problem, capped at 3 agents)."""
+        time (concurrency lives inside a problem, capped at 3 agents). A
+        heartbeat thread tells the board the supervisor is alive."""
         self.recover()
-        while True:
-            for p in self.ledger.list_problems("posted"):
-                self.ledger.set_status(p["id"], "queued")
-            ran = False
-            if self.in_run_window():
-                now = now_iso()
-                for p in self.ledger.list_problems("queued"):
-                    if p["not_before"] and p["not_before"] > now:
-                        continue
-                    status = self.run_problem(p["id"])
-                    log.info("problem %s -> %s; spend %s", p["id"], status, self.governor.spend_status())
-                    ran = True
-                    break
-            if once:
-                return
-            if not ran:
-                sleep(self.config.poll_seconds)
+        self._status = "idle"
+        stop = threading.Event()
+        beat = threading.Thread(target=self._heartbeat_loop, args=(stop,), daemon=True)
+        beat.start()
+        try:
+            while True:
+                for p in self.ledger.list_problems("posted"):
+                    self.ledger.set_status(p["id"], "queued")
+                ran = False
+                if self.in_run_window():
+                    now = now_iso()
+                    for p in self.ledger.list_problems("queued"):
+                        if p["not_before"] and p["not_before"] > now:
+                            continue
+                        self._status = f"running {p['id']}"
+                        status = self.run_problem(p["id"])
+                        log.info("problem %s -> %s; spend %s", p["id"], status, self.governor.spend_status())
+                        self._status = "idle"
+                        ran = True
+                        break
+                else:
+                    self._status = "outside run window"
+                if once:
+                    return
+                if not ran:
+                    sleep(self.config.poll_seconds)
+        finally:
+            stop.set()
+            try:
+                self.ledger.heartbeat("stopped")
+            except Exception:  # shutting down; the board will report it dead anyway
+                pass
+
+    def _heartbeat_loop(self, stop: threading.Event) -> None:
+        L = Ledger(self.db_path, self.config)
+        try:
+            while not stop.is_set():
+                try:
+                    L.heartbeat(getattr(self, "_status", "idle"))
+                except Exception as e:  # never let the heartbeat kill the daemon
+                    log.warning("heartbeat failed: %s", e)
+                stop.wait(self.config.heartbeat_seconds)
+        finally:
+            L.close()
 
     def recover(self) -> None:
         """After a crash: runs left 'running' are dead, their leases are void,
@@ -509,6 +538,7 @@ class Supervisor:
             raise Stop(f"judge failed the deliverable: {v['reasons']}")
         L.post_reply(pid, d["id"], self.render_reply(pid, d))
         L.set_status(pid, "passed")
+        L.event(pid, "attention", "reply ready")
 
     # ------------------------------------------------------------ ideas stages
     def stage_diverge(self, pid: str) -> None:
@@ -625,7 +655,7 @@ class Supervisor:
         single = [c for c in claims if c["single_source"]]
         unchecked = [c for c in claims if not c["quote_checked"]]
         lines = [f"# {p['question']}", "",
-                 f"Mode: {p['mode']} · Deliverable v{d['version']} · Tokens: {self._tokens_line(p)} · "
+                 f"{self.config.system_name} · {p['mode']} · Deliverable v{d['version']} · Tokens: {self._tokens_line(p)} · "
                  f"API-equivalent cost: ${self._cost(p):.2f}", ""]
         if d["unanswered"]:
             lines += ["## Unanswered must-answer items", *[f"- {u}" for u in d["unanswered"]], ""]

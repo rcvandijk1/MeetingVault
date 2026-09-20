@@ -2,7 +2,8 @@
 
 Branch: `claude/artifact-build-dw4ib9` in `rcvandijk1/MeetingVault`
 Source design: "Research Think Tank — High-Level Design v0.1", 19 Sep 2026, revision 34 (section 14 added 20 Sep)
-Status: built, tested (57 tests), live-verified against the real `claude` CLI for the MCP path and the message board; not yet run on a real problem
+Status: built, tested (61 tests), live-verified against the real `claude` CLI for the MCP path and the message board; not yet run on a real problem
+Name: Nightwatch (display name, `system_name` in config)
 
 ---
 
@@ -310,7 +311,10 @@ environment variables. All optional.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
+| `system_name` | `Nightwatch` | Display name in tab, banner, notifications and reply headers |
 | `db_path` | `thinktank.sqlite3` | The one database |
+| `web_tls_cert`, `web_tls_key` | empty | Optional PEM pair; serves the board over https |
+| `heartbeat_seconds` | 30 | Daemon heartbeat interval; dead after three misses |
 | `claude_bin` | `claude` | CLI to spawn |
 | `auth_mode` | `subscription` | `subscription` strips the API key; `api_key` requires it and runs `--bare` |
 | `models` | reader haiku, thinker opus, critic sonnet, synthesizer opus, judge sonnet | Aliases or full model names; lead uses the thinker tier |
@@ -373,6 +377,22 @@ The problem page shows every thread as a message feed, one bubble per real
 message with sender, kind, addressee or topics, refs and time, and the
 agent index with topics, brief, status, wakes and tokens per agent.
 
+### Attention
+
+`GET /api/attention` returns `{name, count, items, daemon_alive,
+daemon_status, heartbeat_age_seconds, running, deferred, queued}`. Items
+are unread replies (until opened or "Mark all as read"), unresolved
+escalations, and "supervisor not running" when the heartbeat in the `state`
+table is older than three beats. The daemon writes the heartbeat from a
+background thread every `heartbeat_seconds` with its current status, and
+writes `stopped` on exit. Every page carries a script that polls the
+endpoint every 30 s, sets the tab title to `(n) <name>` or `(down) <name>`,
+draws a favicon badge, renders the banner, and raises a desktop
+notification when the count rises and permission was granted (browsers
+allow that only on https or localhost; `web_tls_cert`/`web_tls_key` or
+Tailscale Serve provide https). It is a pull from the laptop; the box
+pushes nothing.
+
 An escalation carries the same plus: subtask states, the last verdict, the
 latest draft or "No deliverable was written", claims so far, and options.
 
@@ -388,6 +408,7 @@ latest draft or "No deliverable was written", claims so far, and options.
 | `test_supervisor.py` | Full research flow to reply board; one revision on objections; failed judgement escalates without looping; token cap stops between stages; deadline; no-cap spend panel; list-rate pricing; rate-limit pause and stage resume without re-spend; reader crash → reopen → escalate; plan fallback; unverified notes dropped; mechanical fail hidden from critic; critic cannot override a failed check; ideas flow; concurrency ≤ 3; crash recovery; run window |
 | `test_board.py` | Index birth and self-registration; addressed and topic routing with the two-recipient cap and role rules; board closed during divergence and after synthesis; thread budget, settlement and late-mail regression; question wakes recipients and the answer wakes the asker in the same sessions; a finding to the lead yields a new subtask picked up in the same loop; a critic objection wakes a reader who posts a better note verified in round 2; answer ping-pong stops at the thread budget; ideas combine round; rate-limited first run respawns instead of resuming; retirement deletes sessions |
 | `test_runner.py` (added) | Session and resume flags, agent id in the MCP env, session file path encoding and deletion |
+| `test_attention.py` | Attention items, heartbeat staleness, daemon heartbeat and stop, the JSON endpoint and read-marking over a live HTTP server |
 
 The fake runner plays every role by calling the same `call_tool` layer the
 MCP server uses, so the tests exercise the real tool surface, not a mock of it.

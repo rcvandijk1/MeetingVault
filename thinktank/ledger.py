@@ -955,6 +955,53 @@ class Ledger:
         row = self._one("SELECT * FROM replies WHERE id=?", rid)
         return dict(row) if row else None
 
+    def mark_reply_seen(self, rid: str | None = None) -> int:
+        if rid:
+            cur = self.conn.execute("UPDATE replies SET seen_at=? WHERE id=? AND seen_at IS NULL", (now_iso(), rid))
+        else:
+            cur = self.conn.execute("UPDATE replies SET seen_at=? WHERE seen_at IS NULL", (now_iso(),))
+        return cur.rowcount
+
+    # ------------------------------------------------------------ state, heartbeat, attention
+    def set_state(self, key: str, value: str) -> None:
+        self.conn.execute("INSERT INTO state(key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+                          (key, value, now_iso()))
+
+    def get_state(self, key: str) -> tuple[str, str] | None:
+        row = self._one("SELECT value, updated_at FROM state WHERE key=?", key)
+        return (row["value"], row["updated_at"]) if row else None
+
+    def heartbeat(self, status: str) -> None:
+        self.set_state("daemon", status)
+
+    def attention(self) -> dict:
+        """What needs you: unread replies, open escalations, a supervisor that
+        stopped beating. Computed from the database; nothing is pushed anywhere."""
+        now = datetime.now(timezone.utc)
+        items = []
+        for r in self._all("SELECT r.id, r.problem_id, r.created_at, p.question FROM replies r JOIN problems p ON p.id=r.problem_id WHERE r.seen_at IS NULL ORDER BY r.created_at DESC"):
+            items.append({"kind": "reply", "id": r["id"], "problem_id": r["problem_id"], "at": r["created_at"],
+                          "text": f"Reply ready: {r['question'][:90]}", "href": f"/reply/{r['id']}"})
+        for e in self.list_escalations():
+            items.append({"kind": "escalation", "id": e["id"], "problem_id": e["problem_id"], "at": e["created_at"],
+                          "text": f"Escalated: {e['reason'][:90]}", "href": "/escalations"})
+        hb = self.get_state("daemon")
+        alive, status, age = False, "never started", None
+        if hb:
+            status = hb[0]
+            age = int((now - datetime.fromisoformat(hb[1])).total_seconds())
+            alive = age < self.config.heartbeat_seconds * 3 + 15
+        if not alive:
+            items.append({"kind": "daemon", "id": "daemon", "problem_id": None, "at": hb[1] if hb else None,
+                          "text": "Supervisor is not running" + (f" (last seen {age // 60} min ago)" if age is not None else ""), "href": "/"})
+        running = [{"id": p["id"], "question": p["question"][:90], "status": p["status"], "stage": p["stage_now"]}
+                   for p in self.list_problems() if p["status"] in ("planning", "working", "critiquing", "synthesizing", "judging")]
+        deferred = [{"id": p["id"], "not_before": p["not_before"]} for p in self.list_problems("queued")
+                    if p["not_before"] and p["not_before"] > now.replace(microsecond=0).isoformat()]
+        return {"name": self.config.system_name, "count": len(items), "items": items, "daemon_alive": alive,
+                "daemon_status": status, "heartbeat_age_seconds": age, "running": running, "deferred": deferred,
+                "queued": sum(1 for p in self.list_problems("queued")), "at": now.replace(microsecond=0).isoformat()}
+
     def escalate(self, pid: str, reason: str, partial: str) -> str:
         eid = new_id("e")
         self.conn.execute(

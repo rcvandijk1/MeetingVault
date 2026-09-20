@@ -28,6 +28,8 @@ DEFAULT_MODELS = {
 
 @dataclass
 class Config:
+    # Display name: browser tab, notifications, reply headers. One line to change.
+    system_name: str = "Nightwatch"
     db_path: str = DEFAULT_DB
     claude_bin: str = "claude"
     python_bin: str = sys.executable
@@ -63,6 +65,13 @@ class Config:
     # Web board
     web_host: str = "127.0.0.1"
     web_port: int = 8765
+    # Optional TLS for the board (PEM paths). Browsers only allow desktop
+    # notifications on https (or localhost); the tab badge works either way.
+    web_tls_cert: str = ""
+    web_tls_key: str = ""
+    # The daemon writes a heartbeat this often; the board reports it dead
+    # after three misses.
+    heartbeat_seconds: int = 30
     # Reader note limits (section 10: fixed schema with length limits)
     note_claim_max_chars: int = 400
     note_quote_max_chars: int = 600

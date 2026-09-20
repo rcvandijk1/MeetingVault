@@ -182,7 +182,15 @@ CREATE TABLE IF NOT EXISTS replies (
   body TEXT NOT NULL,
   tokens INTEGER NOT NULL,
   cost_usd REAL NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  seen_at TEXT                        -- set when you open it on the board
+);
+
+-- Small key-value state: daemon heartbeat and status.
+CREATE TABLE IF NOT EXISTS state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS escalations (
@@ -296,6 +304,7 @@ MIGRATIONS = [
     ("claims", "quote_checked", "INTEGER NOT NULL DEFAULT 0"),
     ("problems", "stage_now", "TEXT"),  # the stage currently running; `stage` is the last completed
     ("runs", "agent_id", "TEXT"),
+    ("replies", "seen_at", "TEXT"),
 ]
 
 

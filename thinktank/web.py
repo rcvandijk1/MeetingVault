@@ -1,5 +1,11 @@
 """Minimal local web page over SQLite: inbox board, reply board, escalation
-queue, claim ledger lookup. Standard library only; no JavaScript.
+queue, claim ledger lookup, and an attention signal for the tab you keep
+open on your laptop. Standard library only.
+
+Attention is a pull, not a push: the page polls `/api/attention` on the
+box every 30 seconds and shows a badge in the tab title and favicon; with
+permission, and on https or localhost, it also raises a desktop
+notification. Nothing leaves the box unasked.
 
 Bind it to a private network address (the default is loopback). It has no
 authentication, so never expose it to the internet.
@@ -8,6 +14,7 @@ from __future__ import annotations
 
 import html
 import json
+import ssl
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -20,6 +27,53 @@ nav a{margin-right:1rem}table{border-collapse:collapse;width:100%}td,th{border-b
 pre{white-space:pre-wrap;background:#fff;border:1px solid #ddd;padding:.75rem}label{display:block;margin:.6rem 0 .2rem}
 input[type=text],textarea,select{width:100%;padding:.4rem;font:inherit}textarea{min-height:5rem}.err{color:#a00}.ok{color:#070}
 .badge{background:#eee;border-radius:.3rem;padding:.1rem .4rem;font-size:.85em}
+#attention{border:1px solid #ddd;background:#fff;padding:.6rem .75rem;margin:.5rem 0 1rem;border-radius:.4rem}
+#attention.hot{border-color:#c00;background:#fff4f4}#attention.dead{border-color:#c80;background:#fff8ec}
+#attention ul{margin:.3rem 0 0 1.1rem;padding:0}.unread{font-weight:bold}
+"""
+
+# The attention script: badge in the title and favicon, optional desktop
+# notification, and the banner at the top of every page.
+SCRIPT = """
+(function(){
+  var NAME = document.title.replace(/^\\(\\S+\\) /, '');
+  var last = null;
+  function favicon(n, dead){
+    var c = document.createElement('canvas'); c.width = c.height = 32; var x = c.getContext('2d');
+    x.fillStyle = dead ? '#c80' : (n ? '#c00' : '#2a7'); x.beginPath(); x.arc(16,16,14,0,7); x.fill();
+    if (n){ x.fillStyle='#fff'; x.font='bold 18px sans-serif'; x.textAlign='center'; x.textBaseline='middle'; x.fillText(n>9?'9+':String(n),16,17); }
+    var l = document.querySelector("link[rel='icon']") || document.createElement('link'); l.rel='icon'; l.href=c.toDataURL(); document.head.appendChild(l);
+  }
+  function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+  function render(a){
+    var el = document.getElementById('attention'); if (!el) return;
+    el.className = a.daemon_alive ? (a.count ? 'hot' : '') : 'dead';
+    var h = '<b>' + esc(a.name) + '</b> · supervisor ' + (a.daemon_alive ? esc(a.daemon_status) : '<span class=err>not running</span>');
+    if (a.running.length) h += ' · working on ' + a.running.map(function(r){ return '<a href="/problem/' + esc(r.id) + '">' + esc(r.question) + '</a> (' + esc(r.stage||r.status) + ')'; }).join(', ');
+    if (a.queued) h += ' · ' + a.queued + ' queued';
+    if (a.deferred.length) h += ' · ' + a.deferred.length + ' paused after a rate limit';
+    if (a.count){ h += '<ul>' + a.items.map(function(i){ return '<li><a href="' + esc(i.href) + '">' + esc(i.text) + '</a></li>'; }).join('') + '</ul>'; }
+    else h += ' · nothing needs you';
+    if (window.Notification && Notification.permission !== 'granted') h += ' · <a href="#" onclick="enableNotifications();return false">enable desktop notifications</a>';
+    el.innerHTML = h;
+  }
+  function poll(){
+    fetch('/api/attention', {cache:'no-store'}).then(function(r){ return r.json(); }).then(function(a){
+      document.title = (a.count ? '(' + a.count + ') ' : (a.daemon_alive ? '' : '(down) ')) + NAME;
+      favicon(a.count, !a.daemon_alive); render(a);
+      if (last !== null && a.count > last && window.Notification && Notification.permission === 'granted'){
+        new Notification(a.name + ' needs attention', {body: a.items.slice(0,3).map(function(i){ return i.text; }).join('\\n')});
+      }
+      last = a.count;
+    }).catch(function(){ document.title = '(offline) ' + NAME; favicon(0, true); });
+  }
+  window.enableNotifications = function(){
+    if (!window.Notification){ alert('This browser has no notification support.'); return; }
+    if (!window.isSecureContext){ alert('Desktop notifications need https or localhost. The tab badge still works.'); return; }
+    Notification.requestPermission().then(function(p){ if (p === 'granted') new Notification(NAME, {body: 'Notifications on'}); poll(); });
+  };
+  poll(); setInterval(poll, 30000);
+})();
 """
 
 
@@ -27,9 +81,11 @@ def esc(s) -> str:
     return html.escape("" if s is None else str(s))
 
 
-def page(title: str, body: str) -> bytes:
+def page(title: str, body: str, name: str) -> bytes:
     nav = '<nav><a href="/">Inbox</a><a href="/replies">Replies</a><a href="/escalations">Escalations</a><a href="/ledger">Claim ledger</a></nav>'
-    return f"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>{esc(title)}</title><style>{STYLE}</style></head><body>{nav}<h1>{esc(title)}</h1>{body}</body></html>".encode()
+    return (f"<!doctype html><html><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'>"
+            f"<title>{esc(name)} · {esc(title)}</title><style>{STYLE}</style></head><body>{nav}"
+            f"<div id=attention>{esc(name)} · checking…</div><h1>{esc(title)}</h1>{body}<script>{SCRIPT}</script></body></html>").encode()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -42,9 +98,21 @@ class Handler(BaseHTTPRequestHandler):
     def ledger(self) -> Ledger:
         return Ledger(self.db_path, self.config)
 
+    def page(self, title: str, body: str) -> bytes:
+        return page(title, body, self.config.system_name)
+
     def send_html(self, body: bytes, status: int = 200) -> None:
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_json(self, obj) -> None:
+        body = json.dumps(obj, default=str).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -59,6 +127,8 @@ class Handler(BaseHTTPRequestHandler):
         q = urllib.parse.parse_qs(url.query)
         L = self.ledger()
         try:
+            if url.path == "/api/attention":
+                return self.send_json(L.attention())
             if url.path == "/":
                 return self.send_html(self.inbox(L, q))
             if url.path.startswith("/problem/"):
@@ -71,7 +141,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_html(self.escalations(L))
             if url.path == "/ledger":
                 return self.send_html(self.ledger_page(L, q))
-            self.send_html(page("Not found", ""), 404)
+            self.send_html(self.page("Not found", ""), 404)
         finally:
             L.close()
 
@@ -95,7 +165,10 @@ class Handler(BaseHTTPRequestHandler):
             if url.path.startswith("/escalation/") and url.path.endswith("/resolve"):
                 L.resolve_escalation(url.path.split("/")[2])
                 return self.redirect("/escalations")
-            self.send_html(page("Not found", ""), 404)
+            if url.path == "/replies/seen":
+                L.mark_reply_seen(None)
+                return self.redirect("/replies")
+            self.send_html(self.page("Not found", ""), 404)
         finally:
             L.close()
 
@@ -147,13 +220,36 @@ class Handler(BaseHTTPRequestHandler):
 <label><input type=checkbox name=confidential> This post contains confidential material (it will be rejected)</label>
 <p><button>Post to inbox</button></p></form>
 <h2>Problems</h2><table><tr><th>Id</th><th>Mode</th><th>Question</th><th>Status</th><th>Tokens</th><th>Deadline</th></tr>{rows}</table>"""
-        return page("Inbox board", body)
+        return self.page("Inbox board", body)
+
+    ROLE_COLOURS = {"reader": "#e8f1fb", "lead": "#fbefe0", "thinker": "#eef8e6", "critic": "#fbe8e8", "synthesizer": "#f1e8fb"}
+
+    def conversations(self, L: Ledger, pid: str) -> str:
+        """Every thread as a message feed. Each bubble is a real message on
+        the board, attributed to the agent that posted it."""
+        threads = L.list_threads(pid)
+        if not threads:
+            return "<p>No messages between agents.</p>"
+        out = []
+        for th in threads:
+            state = "open" if th["status"] == "open" else f"closed: {esc(th['closed_reason'])}"
+            bubbles = ""
+            for m in th["messages"]:
+                colour = self.ROLE_COLOURS.get(m["from_role"], "#eee")
+                to = f" → {esc(L.get_agent(m['to_agent'])['name'])}" if m["to_agent"] else (f" → topics {esc(m['topics'])}" if m["topics"] else "")
+                refs = f"<br><small>refs: {esc(', '.join(m['refs']))}</small>" if m["refs"] else ""
+                bubbles += (f"<div style='background:{colour};border-radius:.6rem;padding:.5rem .75rem;margin:.35rem 0;max-width:46rem'>"
+                            f"<b>{esc(m['from_name'])}</b> <span class=badge>{esc(m['kind'])}</span>{to} <small>{esc(m['created_at'])}</small>"
+                            f"<br>{esc(m['body'])}{refs}</div>")
+            arts = f"<small>artefacts: {esc(', '.join(th['artefacts']))}</small>" if th["artefacts"] else ""
+            out.append(f"<details open><summary><b>{esc(th['subject'])}</b> · {len(th['messages'])} messages · {th['tokens_used']:,}/{th['budget_tokens']:,} tokens · {state}</summary>{bubbles}{arts}</details>")
+        return "".join(out)
 
     def problem(self, L: Ledger, pid: str) -> bytes:
         try:
             p = L.get_problem(pid)
         except LedgerError:
-            return page("Not found", "")
+            return self.page("Not found", "")
         tasks = "".join(f"<tr><td>{esc(t['id'])}</td><td>{t['depth']}</td><td>{esc(t['title'])}</td><td><span class=badge>{esc(t['status'])}</span></td><td>{t['tokens_used']:,}/{t['budget_tokens']:,}</td><td>{esc(t['summary'])}</td></tr>" for t in L.list_tasks(pid))
         runs = "".join(f"<tr><td>{esc(r['id'])}</td><td>{esc(r['role'])}</td><td>{esc(r['model'])}</td><td><span class=badge>{esc(r['status'])}</span></td><td>{r['total_tokens']:,}</td><td>${r['cost_usd']:.3f}</td><td>{esc(r['error'])}</td></tr>" for r in L.list_runs(pid))
         notes = "".join(f"<tr><td>{esc(n['status'])}</td><td>{esc(n['claim'])}</td><td><a href='{esc(n['url'])}'>source</a> {esc(n['source_date'])}</td><td>{esc(n['quote_check'] or '-')}</td><td>{esc(n['verify_reason'])}</td></tr>" for n in L.list_notes(pid))
@@ -181,40 +277,23 @@ class Handler(BaseHTTPRequestHandler):
 <h2>Runs</h2><table><tr><th>Id</th><th>Role</th><th>Model</th><th>Status</th><th>Tokens</th><th>Cost</th><th>Error</th></tr>{runs}</table>
 <h2>Fetch log</h2><table><tr><th>At</th><th>Role</th><th>Kind</th><th>URL or query</th></tr>{fetches}</table>
 <h2>Events</h2><table><tr><th>At</th><th>Kind</th><th>Detail</th></tr>{events}</table>"""
-        return page(f"Problem {pid}", body)
-
-    ROLE_COLOURS = {"reader": "#e8f1fb", "lead": "#fbefe0", "thinker": "#eef8e6", "critic": "#fbe8e8", "synthesizer": "#f1e8fb"}
-
-    def conversations(self, L: Ledger, pid: str) -> str:
-        """Every thread as a message feed. Each bubble is a real message on
-        the board, attributed to the agent that posted it."""
-        threads = L.list_threads(pid)
-        if not threads:
-            return "<p>No messages between agents.</p>"
-        out = []
-        for th in threads:
-            state = "open" if th["status"] == "open" else f"closed: {esc(th['closed_reason'])}"
-            bubbles = ""
-            for m in th["messages"]:
-                colour = self.ROLE_COLOURS.get(m["from_role"], "#eee")
-                to = f" → {esc(L.get_agent(m['to_agent'])['name'])}" if m["to_agent"] else (f" → topics {esc(m['topics'])}" if m["topics"] else "")
-                refs = f"<br><small>refs: {esc(', '.join(m['refs']))}</small>" if m["refs"] else ""
-                bubbles += (f"<div style='background:{colour};border-radius:.6rem;padding:.5rem .75rem;margin:.35rem 0;max-width:46rem'>"
-                            f"<b>{esc(m['from_name'])}</b> <span class=badge>{esc(m['kind'])}</span>{to} <small>{esc(m['created_at'])}</small>"
-                            f"<br>{esc(m['body'])}{refs}</div>")
-            arts = f"<small>artefacts: {esc(', '.join(th['artefacts']))}</small>" if th["artefacts"] else ""
-            out.append(f"<details open><summary><b>{esc(th['subject'])}</b> · {len(th['messages'])} messages · {th['tokens_used']:,}/{th['budget_tokens']:,} tokens · {state}</summary>{bubbles}{arts}</details>")
-        return "".join(out)
+        return self.page(f"Problem {pid}", body)
 
     def replies(self, L: Ledger) -> bytes:
-        rows = "".join(f"<tr><td>{esc(r['created_at'])}</td><td><a href='/reply/{esc(r['id'])}'>{esc(r['problem_id'])}</a></td><td>{r['tokens']:,}</td><td>${r['cost_usd']:.2f}</td></tr>" for r in L.list_replies())
-        return page("Reply board", f"<table><tr><th>Posted</th><th>Problem</th><th>Tokens</th><th>Cost</th></tr>{rows}</table>")
+        rows = "".join(
+            f"<tr class='{'unread' if not r['seen_at'] else ''}'><td>{esc(r['created_at'])}</td><td><a href='/reply/{esc(r['id'])}'>{esc(r['problem_id'])}</a></td>"
+            f"<td>{esc(L.get_problem(r['problem_id'])['question'][:80])}</td><td>{r['tokens']:,}</td><td>${r['cost_usd']:.2f}</td><td>{'new' if not r['seen_at'] else esc(r['seen_at'])}</td></tr>"
+            for r in L.list_replies())
+        body = (f"<form method=post action=/replies/seen><button>Mark all as read</button></form>"
+                f"<table><tr><th>Posted</th><th>Problem</th><th>Question</th><th>Tokens</th><th>Cost</th><th>Read</th></tr>{rows}</table>")
+        return self.page("Reply board", body)
 
     def reply(self, L: Ledger, rid: str) -> bytes:
         r = L.get_reply(rid)
         if not r:
-            return page("Not found", "")
-        return page(f"Reply for {r['problem_id']}", f"<p><a href='/problem/{esc(r['problem_id'])}'>problem</a></p><pre>{esc(r['body'])}</pre>")
+            return self.page("Not found", "")
+        L.mark_reply_seen(rid)  # opening it is reading it
+        return self.page(f"Reply for {r['problem_id']}", f"<p><a href='/problem/{esc(r['problem_id'])}'>problem</a></p><pre>{esc(r['body'])}</pre>")
 
     def escalations(self, L: Ledger) -> bytes:
         items = "".join(
@@ -223,7 +302,7 @@ class Handler(BaseHTTPRequestHandler):
             f"<form method=post action='/escalation/{esc(e['id'])}/resolve'><button>Mark resolved</button></form>"
             for e in L.list_escalations()
         )
-        return page("Escalation queue", items or "<p>Nothing waiting.</p>")
+        return self.page("Escalation queue", items or "<p>Nothing waiting.</p>")
 
     def ledger_page(self, L: Ledger, q: dict) -> bytes:
         query = (q.get("q") or [""])[0]
@@ -232,19 +311,21 @@ class Handler(BaseHTTPRequestHandler):
             for c in L.search_claims(query, limit=50, include_expired=True):
                 rows += f"<tr><td>{esc(c['claim'])}</td><td><a href='{esc(c['source_url'])}'>source</a> {esc(c['source_date'])}</td><td>{esc(c['claim_type'])}</td><td>{'expired' if c['expired'] else esc(c['expires_at'] or 'never')}</td><td>{'yes' if c['single_source'] else 'no'}</td><td>{'yes' if c['quote_checked'] else 'no'}</td></tr>"
         body = f"<form><input type=text name=q value='{esc(query)}' placeholder='search verified claims'></form><table><tr><th>Claim</th><th>Source</th><th>Type</th><th>Expires</th><th>Single source</th><th>Quote machine-checked</th></tr>{rows}</table>"
-        return page("Claim ledger", body)
+        return self.page("Claim ledger", body)
 
 
 def serve(config: Config, db_path: str) -> None:
     Handler.config = config
     Handler.db_path = db_path
     srv = ThreadingHTTPServer((config.web_host, config.web_port), Handler)
-    print(f"think tank board on http://{config.web_host}:{config.web_port}/")
+    scheme = "http"
+    if config.web_tls_cert and config.web_tls_key:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(config.web_tls_cert, config.web_tls_key)
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+        scheme = "https"
+    print(f"{config.system_name} board on {scheme}://{config.web_host}:{config.web_port}/")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
-
-
-def render_json(obj) -> str:
-    return json.dumps(obj, indent=2, default=str)

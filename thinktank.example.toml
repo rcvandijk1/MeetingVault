@@ -1,6 +1,9 @@
 # Copy to thinktank.toml (or point THINKTANK_CONFIG at it). Every key is optional.
 # Environment variables THINKTANK_<KEY> override these, e.g. THINKTANK_RUN_WINDOW="22:00-07:00".
 
+# Display name: browser tab, notifications, reply headers.
+system_name = "Nightwatch"
+
 db_path = "thinktank.sqlite3"
 claude_bin = "claude"
 
@@ -39,6 +42,12 @@ judge = "sonnet"
 # Board. Loopback by default; bind to your private network address to reach it from a phone.
 # web_host = "127.0.0.1"
 # web_port = 8765
+# Optional TLS (PEM paths). Desktop notifications in the browser need https or
+# localhost; the tab badge works either way. Tailscale Serve is the easier route.
+# web_tls_cert = ""
+# web_tls_key = ""
+# The daemon writes a heartbeat this often; the board reports it dead after three misses.
+# heartbeat_seconds = 30
 
 # Section 8 expiry defaults, in days. Historical facts never expire.
 # [claim_expiry_days]

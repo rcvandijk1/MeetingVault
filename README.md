@@ -1,9 +1,10 @@
-# Research Think Tank v0.1
+# Nightwatch: a research think tank
 
 A standalone research department: you post a problem with a clear
-deliverable on an inbox board, ephemeral agents research and argue it out,
+deliverable on an inbox board, agents research and argue it out overnight,
 and a checked answer lands on a reply board. Built from the design in
-"Research Think Tank — High-Level Design v0.1" (19 Sep 2026).
+"Research Think Tank — High-Level Design v0.1" (19 Sep 2026). The display
+name is one config line (`system_name`); the Python package is `thinktank`.
 
 The environment persists; the agents do not. Boards, task ledger and claim
 ledger live in one SQLite file. A deterministic Python supervisor spawns
@@ -99,6 +100,17 @@ is read-only for the synthesizer and invisible to the judge.
 A thread has a 200,000-token budget charged from the wakes it causes and
 closes when spent. There is no reply limit. The problem page shows every
 thread as a message feed, one bubble per real message, plus the agent index.
+
+## When it needs you
+
+Keep a tab of the board pinned on your laptop. Every page polls
+`/api/attention` on the box every 30 seconds and shows a badge in the
+title and favicon: red with a count for unread replies and open
+escalations, amber when the supervisor's heartbeat has stopped. The banner
+at the top lists what needs you and what the supervisor is doing. With
+permission, and on https or localhost, it also raises a desktop
+notification when the count rises. Opening a reply marks it read. Nothing
+is pushed off the box; the tab asks.
 
 ## Rules the code enforces
 
