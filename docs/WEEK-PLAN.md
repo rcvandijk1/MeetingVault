@@ -6,29 +6,142 @@ first real problems. Each day ends with an exit test. Do not start the next
 day until the exit test passes; the days are ordered so that a failure
 early costs an hour, not a night of tokens.
 
-Assumptions: a mini PC with 8 GB RAM and 64 GB of disk or more, Ubuntu
-Server 24.04 (or Debian 12), your Claude Max subscription, a laptop on the
-same network for SSH, and a phone you want to read the board from. Nothing
-else runs on this box. Ever.
+Assumptions: a mini PC with 8 GB RAM and 64 GB of disk or more, your
+Claude Max subscription, a laptop on the same network for SSH, and a phone
+you want to read the board from. The box never gets a keyboard, mouse or
+monitor: it is installed from your laptop and only ever reached over SSH.
+Nothing else runs on it. Ever.
 
 ---
 
-## Day 1 (Mon): the box
+## Day 1 (Mon): the box, with nothing plugged in but power and Ethernet
 
-**Goal:** a clean, locked-down machine that can run one headless Claude call.
+**Goal:** a clean, locked-down machine you can SSH into, that can run one
+headless Claude call.
 
-1. Install Ubuntu Server 24.04 minimal, OpenSSH only. Hostname `thinktank`.
-   Create user `thinktank` with sudo; put your laptop's SSH public key in
-   its `~/.ssh/authorized_keys`; disable password SSH.
-2. Firewall: allow SSH from your LAN only; nothing else yet.
+The operating system is installed without ever seeing the box's screen.
+Three ways, pick by hardware:
+
+| Your hardware | Path | Needs |
+|---------------|------|-------|
+| x86 mini PC and you can reach its SSD (open the case, or a USB-to-NVMe/SATA adapter) | **A: image the disk from the laptop** | the adapter, 20 minutes, no keystroke on the box ever |
+| x86 mini PC, disk stays inside | **B: USB installer with autoinstall** | a USB stick; one keystroke on the box unless you remaster the ISO |
+| Raspberry Pi 4/5 | **C: Raspberry Pi Imager** | the SD card or NVMe in the laptop |
+
+Whichever path, prepare two things on the laptop first:
+
+- An SSH key for this box: `ssh-keygen -t ed25519 -f ~/.ssh/thinktank -C thinktank`.
+  Its public half goes into the seed below.
+- A seed file `user-data` (cloud-init). This is the whole Day 1 setup,
+  applied on first boot:
+  ```yaml
+  #cloud-config
+  hostname: thinktank
+  timezone: Europe/Amsterdam
+  users:
+    - name: thinktank
+      groups: [sudo]
+      shell: /bin/bash
+      sudo: ALL=(ALL) NOPASSWD:ALL
+      ssh_authorized_keys:
+        - ssh-ed25519 AAAA...your key...  thinktank
+  ssh_pwauth: false
+  package_update: true
+  package_upgrade: true
+  packages: [avahi-daemon, ufw, unattended-upgrades, git, python3, python3-venv, python3-pip, sqlite3, curl]
+  runcmd:
+    - ufw default deny incoming
+    - ufw default allow outgoing
+    - ufw allow from 192.168.0.0/16 to any port 22   # your LAN range
+    - ufw --force enable
+  ```
+  and a two-line `meta-data`:
+  ```yaml
+  instance-id: thinktank-1
+  local-hostname: thinktank
+  ```
+  `avahi-daemon` is what lets you type `ssh thinktank@thinktank.local`
+  instead of hunting for an IP address.
+
+**Path A: image the disk from the laptop.** No installer runs; the box
+boots straight into a configured system.
+
+1. Download the Ubuntu 24.04 server cloud image
+   (`ubuntu-24.04-server-cloudimg-amd64.img` from cloud-images.ubuntu.com).
+   It boots on UEFI and BIOS machines and grows to fill the disk on first boot.
+2. Connect the box's SSD to the laptop. Find it with `lsblk`; be certain of
+   the device name, this wipes it.
    ```bash
-   sudo ufw default deny incoming && sudo ufw default allow outgoing
-   sudo ufw allow from 192.168.0.0/16 to any port 22   # your LAN range
-   sudo ufw enable
+   qemu-img convert -O raw ubuntu-24.04-server-cloudimg-amd64.img /tmp/ubuntu.raw   # macOS: brew install qemu; Linux: apt install qemu-utils
+   sudo dd if=/tmp/ubuntu.raw of=/dev/sdX bs=4M status=progress conv=fsync
    ```
-3. Unattended upgrades on. Time zone set to yours (the run window is local time).
+3. Put the seed on any small USB stick formatted FAT32 with the volume
+   label `CIDATA`, containing `user-data` and `meta-data` at its root.
+   cloud-init looks for that label on first boot.
+4. SSD back in the box, CIDATA stick in a USB port, Ethernet in, power on.
+   Wait five minutes (package upgrade). Then from the laptop:
    ```bash
-   sudo apt update && sudo apt install -y unattended-upgrades git python3 python3-venv python3-pip sqlite3 curl
+   ssh -i ~/.ssh/thinktank thinktank@thinktank.local
+   ```
+   Once in, pull the stick out; it is not needed again. Windows laptop:
+   Rufus writes the raw image in DD mode; the CIDATA stick is just a FAT32
+   format with that label.
+
+**Path B: USB installer with autoinstall.** The disk stays in the box.
+
+1. Write the Ubuntu 24.04 live-server ISO to a USB stick (Rufus,
+   balenaEtcher, or `dd`).
+2. Second USB stick, FAT32, label `CIDATA`, with `meta-data` as above and
+   this `user-data` (the installer's own format; the cloud-config from
+   above rides inside it):
+   ```yaml
+   #cloud-config
+   autoinstall:
+     version: 1
+     locale: en_US.UTF-8
+     keyboard: {layout: us}
+     storage: {layout: {name: direct}}
+     identity:
+       hostname: thinktank
+       username: thinktank
+       password: "<output of: openssl passwd -6>"
+     ssh:
+       install-server: true
+       allow-pw: false
+       authorized-keys: ["ssh-ed25519 AAAA...your key... thinktank"]
+     packages: [avahi-daemon, ufw, unattended-upgrades, git, python3-venv, python3-pip, sqlite3, curl]
+     timezone: Europe/Amsterdam
+     late-commands:
+       - curtin in-target -- ufw default deny incoming
+       - curtin in-target -- ufw allow from 192.168.0.0/16 to any port 22
+       - curtin in-target -- ufw --force enable
+   ```
+3. Both sticks in, Ethernet in, power on. A mini PC with an empty disk
+   boots the USB installer by itself; one with Windows preinstalled needs
+   the boot-menu key once, which means borrowing a keyboard for ten
+   seconds. The installer also asks "Continue with autoinstall?" once
+   unless the ISO's kernel line carries `autoinstall`; that is the second
+   place a borrowed keyboard saves you an ISO remaster. If you have no
+   keyboard at all, use path A.
+4. The box reboots itself into the installed system. Pull both sticks,
+   `ssh -i ~/.ssh/thinktank thinktank@thinktank.local`.
+
+**Path C: Raspberry Pi.** Raspberry Pi Imager, choose Ubuntu Server 24.04
+64-bit, click the gear: hostname `thinktank`, user `thinktank`, paste the
+SSH public key, disable password login, set Wi-Fi if no Ethernet. Write,
+insert, power on, `ssh thinktank@thinktank.local`. Then run the `packages`
+and `ufw` lines from the seed by hand.
+
+**Finding the box if `.local` does not resolve:** your router's DHCP
+client list, or from the laptop `nmap -sn 192.168.1.0/24` and look for the
+new host. Then give the box a fixed address in the router (DHCP
+reservation) so `web_host` on Day 2 stays valid.
+
+The rest of Day 1 is over SSH:
+
+3. Confirm the seed did its job, then set the time zone if path C skipped it:
+   ```bash
+   sudo ufw status && timedatectl && ssh -T localhost 2>&1 | head -1
    sudo timedatectl set-timezone Europe/Amsterdam
    ```
 4. Install Claude Code. Native installer first; npm as the fallback.
@@ -37,11 +150,14 @@ else runs on this box. Ever.
    # fallback: install Node 22 (nodesource) then: npm install -g @anthropic-ai/claude-code
    claude --version
    ```
-5. Headless login. A box without a browser uses a long-lived token:
+5. Headless login. A box without a browser uses a long-lived token,
+   created inside your SSH session:
    ```bash
    claude setup-token
    ```
-   It prints a URL. Open it on your laptop, approve, paste the code back.
+   It prints a URL. Open that URL in the browser on your laptop, approve
+   with your Claude account, and paste the code it gives you back into the
+   SSH session.
    Put the token it prints in an environment file the services will read:
    ```bash
    sudo install -m 600 -o thinktank -g thinktank /dev/null /etc/thinktank.env
@@ -282,7 +398,18 @@ Failure playbook:
 Security card, once, on Day 1: no other repositories, SSH keys, cloud
 credentials or mounted drives on this box; SSH agent forwarding off in your
 laptop's config for this host; the token file is mode 600; the board port
-is never forwarded through the router.
+is never forwarded through the router. If the box ever needs a rescue and
+you still have no keyboard, path A is also the rescue path: pull the SSD,
+mount it on the laptop, fix, put it back.
+
+A convenience for the laptop, in `~/.ssh/config`:
+```
+Host thinktank
+    HostName thinktank.local
+    User thinktank
+    IdentityFile ~/.ssh/thinktank
+    ForwardAgent no
+```
 
 ---
 
