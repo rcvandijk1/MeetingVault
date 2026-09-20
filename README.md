@@ -88,7 +88,9 @@ directories are deleted at close.
 Messages are typed (question, finding, objection, request, answer), carry
 references by id, and are either addressed to one agent or routed by topic.
 Routing is done by code against registered topics: at most two recipients,
-most overlap first, readers and thinkers before the critic, the lead last.
+most overlap first, readers and thinkers before the critic. The lead is
+addressable by name only. An answer that asks nothing is recorded in its
+thread but wakes nobody who was not waiting for it.
 The supervisor wakes recipients inside the working stages (plan, read,
 verify, premortem, repair), interleaved with reader dispatch, at most three
 agents at a time. Idea divergence stays blind; from synthesis on the board
@@ -144,5 +146,5 @@ real ceiling rather than its price. Repeat monthly.
 - The board has no authentication. Keep it on loopback or a private network.
 - Agent sessions hold raw web content while a problem runs. They live under
   the CLI's project directory and `agent_dir` until the problem closes.
-- Two agents that answer each other's answers burn a thread's budget and
-  stop there; the deadline is the outer bound on the board as a whole.
+- The deadline is the outer bound on the board as a whole; thread budgets
+  bound each conversation.

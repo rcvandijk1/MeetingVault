@@ -44,14 +44,14 @@ def test_addressed_and_topic_routing(ledger, config):
     r2 = ledger.born(pid, role="reader", name="r2", session_id="s", workdir="w", model="m", topics=["customers"])
     r3 = ledger.born(pid, role="reader", name="r3", session_id="s", workdir="w", model="m", topics=["pricing"])
     r4 = ledger.born(pid, role="reader", name="r4", session_id="s", workdir="w", model="m", topics=["pricing models"])
-    lead = ledger.born(pid, role="lead", name="lead", session_id="s", workdir="w", model="m", topics=["broadcast"])
+    lead = ledger.born(pid, role="lead", name="lead", session_id="s", workdir="w", model="m", topics=["broadcast", "pricing"])
     # addressed
     m = ledger.post_message(pid, from_agent=r2, kind="question", body="Who sells to RTL?", to_agent="lead")
     assert m["recipients"] == ["lead"] and m["routing"].startswith("addressed")
     # topic: at most max_topic_matches, sender excluded, substring overlap counts
     m = ledger.post_message(pid, from_agent=r2, kind="finding", body="pricing is per channel", topics=["pricing"])
     assert len(m["recipients"]) == config.max_topic_matches and "r2" not in m["recipients"]
-    assert set(m["recipients"]) <= {"r1", "r3", "r4"}
+    assert set(m["recipients"]) <= {"r1", "r3", "r4"}  # the lead has "pricing" too but is addressable only
     # no match is recorded, not an error
     m = ledger.post_message(pid, from_agent=r1, kind="finding", body="nothing overlaps", topics=["zzz"])
     assert m["recipients"] == [] and "no match" in m["routing"]
@@ -122,6 +122,30 @@ def test_thread_budget_and_settlement(ledger, config):
     assert ledger.get_thread(tid)["artefacts"] == ["n_123"]
 
 
+def test_an_answer_that_asks_nothing_wakes_nobody_who_was_not_waiting(ledger, config):
+    pid = post(ledger)
+    open_board(ledger, pid)
+    a = ledger.born(pid, role="reader", name="a", session_id="s", workdir="w", model="m", topics=["t"])
+    b = ledger.born(pid, role="reader", name="b", session_id="s", workdir="w", model="m", topics=["t"])
+    tid = ledger.post_message(pid, from_agent=a, kind="question", body="Which page?", to_agent="b")["thread_id"]
+    ledger.settle_pickups(b, ledger.pickups_waiting(b))
+    # b answers: a asked, so a is woken
+    m = ledger.post_message(pid, from_agent=b, kind="answer", body="Page 3.", to_agent="a", thread_id=tid)
+    assert m["recipients"] == ["a"] and ledger.pending_pickups(pid) == [{"agent_id": a, "count": 1}]
+    ledger.settle_pickups(a, ledger.pickups_waiting(a))
+    # a says thanks: b's last word was an answer, so nothing is created
+    m = ledger.post_message(pid, from_agent=a, kind="answer", body="Noted, thanks.", to_agent="b", thread_id=tid)
+    assert m["recipients"] == ["b"] and "no pickup" in m["routing"] and ledger.pending_pickups(pid) == []
+    # but a follow-up question inside an answer still wakes
+    m = ledger.post_message(pid, from_agent=a, kind="answer", body="Noted. Is that the 2026 edition?", to_agent="b", thread_id=tid)
+    assert "no pickup" not in m["routing"] and ledger.pending_pickups(pid) == [{"agent_id": b, "count": 1}]
+    # the thread still records every message
+    assert [x["kind"] for x in ledger.thread_messages(tid)] == ["question", "answer", "answer", "answer"]
+    # an answer that opens a new thread to someone who asked nothing wakes nobody
+    m = ledger.post_message(pid, from_agent=b, kind="answer", body="FYI, done.", to_agent="a")
+    assert "no pickup" in m["routing"]
+
+
 # --------------------------------------------------------------- the event loop
 def test_question_wakes_recipient_and_the_answer_wakes_the_asker(config, db, ledger):
     def curious_reader(spec, call, on_fetch):
@@ -135,24 +159,23 @@ def test_question_wakes_recipient_and_the_answer_wakes_the_asker(config, db, led
     sup, runner = make(config, db, {("reader", "read"): curious_reader})
     pid = post(ledger)
     assert sup.run_problem(pid) == "passed"
-    # The question overlaps the pricing reader and (through "pricing" in the
-    # brief) the lead; both are woken and answer; the asker is woken once
-    # for both answers; the critic's wake is its deliverable critique.
+    # The question overlaps the pricing reader (the lead also carries
+    # "pricing" but is addressable only); the pricing reader is woken and
+    # answers; the asker is woken to read the answer; the critic's wake is
+    # its deliverable critique.
     wakes = [s for s in runner.calls if s.stage == "wake"]
-    assert sorted(s.role for s in wakes) == ["lead", "reader", "reader"]
+    assert [s.role for s in wakes] == ["reader", "reader"]
     agents = {a["name"]: a for a in ledger.list_agents(pid, alive_only=False)}
     pricing, vendors, lead = agents["reader-pricing-model"], agents["reader-vendors"], agents["lead"]
-    by_agent = {s.agent_id: s for s in wakes}
-    assert by_agent[pricing["id"]].session_id == pricing["session_id"] and by_agent[pricing["id"]].workdir == pricing["workdir"]
-    assert by_agent[pricing["id"]].resume and by_agent[vendors["id"]].resume
-    assert wakes[-1].agent_id == vendors["id"]  # the asker is woken last, after the answers
+    assert wakes[0].agent_id == pricing["id"] and wakes[0].session_id == pricing["session_id"] and wakes[0].workdir == pricing["workdir"]
+    assert wakes[0].resume and wakes[1].resume and wakes[1].agent_id == vendors["id"]
     threads = ledger.list_threads(pid)
-    assert len(threads) == 1 and [m["kind"] for m in threads[0]["messages"]] == ["question", "answer", "answer"]
-    assert threads[0]["messages"][0]["routing"] == "topics pricing model -> reader-pricing-model, lead"
+    assert len(threads) == 1 and [m["kind"] for m in threads[0]["messages"]] == ["question", "answer"]
+    assert threads[0]["messages"][0]["routing"] == "topics pricing model -> reader-pricing-model"
     assert threads[0]["status"] == "closed" and threads[0]["closed_reason"] == "problem closed"
-    assert pricing["wakes"] == 1 and vendors["wakes"] == 1 and lead["wakes"] == 1 and pricing["status"] == "retired"
+    assert pricing["wakes"] == 1 and vendors["wakes"] == 1 and lead["wakes"] == 0 and pricing["status"] == "retired"
     assert ledger.pending_pickups(pid) == []
-    assert "Message board (1 threads, 3 messages" in ledger.list_replies()[0]["body"]
+    assert "Message board (1 threads, 2 messages" in ledger.list_replies()[0]["body"]
 
 
 def test_finding_to_lead_makes_lead_split_a_new_subtask(config, db, ledger):
@@ -222,7 +245,7 @@ def test_ping_pong_stops_when_the_thread_budget_is_spent(config, db, ledger):
 
     def argumentative(spec, call, on_fetch):
         for m in call("read_inbox"):
-            call("post_message", kind="answer", body="and again", to=m["from"], thread_id=m["thread_id"])
+            call("post_message", kind="answer", body="and again?", to=m["from"], thread_id=m["thread_id"])
 
     sup, runner = make(config, db, {("reader", "read"): reader, ("reader", "wake"): argumentative})
     pid = post(ledger)

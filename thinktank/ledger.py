@@ -779,6 +779,8 @@ class Ledger:
             for a in self.list_agents(pid):
                 if a["id"] == sender["id"] or a["role"] not in MAY_MESSAGE.get(sender["role"], set()):
                     continue
+                if a["role"] == "lead":
+                    continue  # the lead is addressable only; its brief-wide topics would match everything
                 overlap = _topic_overlap(tops, a["topics"])
                 if overlap:
                     scored.append((overlap, a))
@@ -803,6 +805,15 @@ class Ledger:
                 (thread_id, pid, body[:120], ",".join(tops), self.config.thread_token_budget, now_iso(), now_iso()),
             )
             parent_id = None
+        # An answer that asks nothing wakes nobody who was not waiting for it:
+        # it is delivered only to a recipient whose last word in the thread was
+        # a question, request, objection or finding. "Noted." to an answer is
+        # recorded in the thread but creates no pickup.
+        woken = recipients
+        if kind == "answer" and "?" not in body:
+            woken = [a for a in recipients if self._awaits_answer(thread_id, a["id"])]
+            if len(woken) < len(recipients):
+                routing += " (no pickup: answers an answer)"
         mid = new_id("m")
         self.conn.execute(
             """INSERT INTO messages(id, problem_id, thread_id, parent_id, from_agent, to_agent, kind, body, refs, topics, routing, created_at)
@@ -810,11 +821,18 @@ class Ledger:
             (mid, pid, thread_id, parent_id, sender["id"], recipients[0]["id"] if to_agent else None, kind, body,
              json.dumps(refs), ",".join(tops), routing, now_iso()),
         )
-        for a in recipients:
+        for a in woken:
             self.conn.execute("INSERT OR IGNORE INTO pickups(message_id, agent_id, problem_id, created_at) VALUES (?,?,?,?)", (mid, a["id"], pid, now_iso()))
         self.conn.execute("UPDATE threads SET updated_at=? WHERE id=?", (now_iso(), thread_id))
         self.event(pid, "message", f"{mid} {sender['name']} [{kind}] {routing}: {body[:120]}")
         return {"message_id": mid, "thread_id": thread_id, "recipients": [a["name"] for a in recipients], "routing": routing}
+
+    def _awaits_answer(self, thread_id: str | None, agent_id: str) -> bool:
+        """True when the agent's last message in the thread was not itself an answer."""
+        if not thread_id:
+            return False
+        row = self._one("SELECT kind FROM messages WHERE thread_id=? AND from_agent=? ORDER BY created_at DESC, rowid DESC LIMIT 1", thread_id, agent_id)
+        return bool(row) and row["kind"] != "answer"
 
     def get_thread(self, tid: str) -> dict:
         row = self._one("SELECT * FROM threads WHERE id=?", tid)

@@ -125,7 +125,7 @@ Claim expiry defaults (days): price 182, market_size 182, capability 365, compan
 
 Board tools: `register_self(topics, brief)`, `list_agents()`, `post_message(kind, body, to | topics, refs, thread_id)`, `read_inbox()`, `get_thread(id)`, `list_threads()`.
 
-Who may address whom: reader → reader, lead, critic; lead → reader, lead, critic; thinker → thinker, critic; critic → reader, lead, thinker. The synthesizer and judge never send or receive.
+Who may address whom: reader → reader, lead, critic; lead → reader, lead, critic; thinker → thinker, critic; critic → reader, lead, thinker. The lead is reached by name only, never by topic. The synthesizer and judge never send or receive.
 
 No role has a shell, file system or git. The tool list is enforced twice: the
 CLI's `--tools` flag removes built-ins, and the MCP server refuses any tool not
@@ -199,10 +199,14 @@ stop conditions (own token cap if set, deadline).
   name or id) or a list of topics. A new message opens a thread; a reply
   names the thread.
 - **Route.** Addressed → one pickup. Topic → code scores every alive agent
-  the sender may address by overlap with its registered topics (equal, or
-  one contains the other with ≥ 4 chars), keeps the top two, tie-break
-  readers and thinkers, then critic, then lead, then age. No match is
-  recorded, not an error.
+  the sender may address, except the lead, by overlap with its registered
+  topics (equal, or one contains the other with ≥ 4 chars), keeps the top
+  two, tie-break readers and thinkers, then critic, then age. The lead is
+  addressable by name only. No match is recorded, not an error.
+- **Answers.** An answer with no question mark creates a pickup only for a
+  recipient whose last message in the thread was not itself an answer.
+  "Noted." to an answer is recorded but wakes nobody; the routing field says
+  so.
 - **Wake.** The event loop groups an agent's pending pickups into one wake:
   resume its session with "N new messages, call read_inbox". Pickups the
   wake was started for are settled afterwards whether read or not; mail that
@@ -421,9 +425,9 @@ is the test of these.
 - Agent sessions hold raw web content until the problem closes. Public
   topics only, so no leak risk, but this is where injected text would sit
   in full; sessions are deleted at close.
-- Two agents answering each other's answers spend a thread's 200k budget
-  before stopping. The prompts tell agents not to reply to an answer; the
-  budget is the enforcement. Watch the first real problem's feed for it.
+- Answer-to-answer courtesy loops are prevented in code (an answer that asks
+  nothing wakes nobody who was not waiting). A loop of genuine questions is
+  still bounded only by the thread budget.
 - The doc's venture mode and execution layer (sections 5 and 11, added by
   another session) are not built.
 - Verification of quote presence is code; the critic still uses WebFetch,
