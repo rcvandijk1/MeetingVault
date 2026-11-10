@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kantlijn</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Kantlijn</h1>
+    <a id="settings" href="../options/options.html" target="_blank" rel="noopener">Indeling en feeds</a>
+  </header>
+
+  <section id="site" class="card" aria-live="polite"></section>
+
+  <section id="actions" class="actions" hidden>
+    <button id="btn-article" class="primary" type="button">Analyseer dit artikel</button>
+    <button id="btn-select" type="button">Kies een artikel op de pagina</button>
+    <button id="btn-selection" type="button">Analyseer geselecteerde tekst</button>
+  </section>
+
+  <p id="status" class="status" role="status" hidden></p>
+
+  <main id="result" hidden>
+    <section class="card">
+      <p id="art-source" class="meta"></p>
+      <h2 id="art-title"></h2>
+      <div id="band" class="band"></div>
+      <ul id="notes" class="notes"></ul>
+    </section>
+
+    <section>
+      <h3>Gevonden technieken</h3>
+      <div id="findings"></div>
+    </section>
+
+    <section>
+      <h3>Wie brengt dit nieuws ook?</h3>
+      <div id="coverage" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Kantlijn telt taalpatronen op je eigen computer. Het begrijpt de inhoud niet, controleert geen feiten en mist subtiele framing. Lees de citaten en oordeel zelf.</p>
+    <p>Er gaat geen artikeltekst naar een server. Voor de vergelijking haalt Kantlijn alleen de openbare nieuwsfeeds van de titels op.</p>
+  </footer>
+
+  <script type="module" src="panel.js"></script>
+</body>
+</html>

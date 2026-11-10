@@ -1,0 +1,13 @@
+{
+  "name": "kantlijn",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Chrome-extensie die beïnvloedingstechnieken in nieuwsartikelen zichtbaar maakt.",
+  "scripts": {
+    "test": "node --test tests/*.test.js && node scripts/sync-manifest.mjs --check",
+    "test:e2e": "node tests/e2e.mjs",
+    "sync": "node scripts/sync-manifest.mjs",
+    "feeds": "node scripts/check-feeds.mjs"
+  }
+}

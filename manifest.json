@@ -1,0 +1,114 @@
+{
+  "manifest_version": 3,
+  "name": "Kantlijn",
+  "version": "0.1.0",
+  "description": "Laat zien welke beïnvloedingstechnieken in een nieuwsartikel zitten en welke media hetzelfde nieuws brengen.",
+  "minimum_chrome_version": "116",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Kantlijn: klik om deze pagina te analyseren",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel/panel.html"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "scripting",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://*.ad.nl/*",
+    "*://*.apache.be/*",
+    "*://*.bnnvara.nl/*",
+    "*://*.dagelijksestandaard.nl/*",
+    "*://*.decorrespondent.nl/*",
+    "*://*.demorgen.be/*",
+    "*://*.dewereldmorgen.be/*",
+    "*://*.doorbraak.be/*",
+    "*://*.ewmagazine.nl/*",
+    "*://*.fd.nl/*",
+    "*://*.geenstijl.nl/*",
+    "*://*.groene.nl/*",
+    "*://*.gva.be/*",
+    "*://*.hbvl.be/*",
+    "*://*.hln.be/*",
+    "*://*.knack.be/*",
+    "*://*.nieuwsblad.be/*",
+    "*://*.nos.nl/*",
+    "*://*.nrc.nl/*",
+    "*://*.nu.nl/*",
+    "*://*.pallieterke.net/*",
+    "*://*.parool.nl/*",
+    "*://*.rd.nl/*",
+    "*://*.rtl.nl/*",
+    "*://*.rtlnieuws.nl/*",
+    "*://*.sceptr.net/*",
+    "*://*.standaard.be/*",
+    "*://*.telegraaf.nl/*",
+    "*://*.tijd.be/*",
+    "*://*.trouw.nl/*",
+    "*://*.volkskrant.nl/*",
+    "*://*.vrt.be/*",
+    "*://*.wnl.tv/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.ad.nl/*",
+        "*://*.apache.be/*",
+        "*://*.bnnvara.nl/*",
+        "*://*.dagelijksestandaard.nl/*",
+        "*://*.decorrespondent.nl/*",
+        "*://*.demorgen.be/*",
+        "*://*.dewereldmorgen.be/*",
+        "*://*.doorbraak.be/*",
+        "*://*.ewmagazine.nl/*",
+        "*://*.fd.nl/*",
+        "*://*.geenstijl.nl/*",
+        "*://*.groene.nl/*",
+        "*://*.gva.be/*",
+        "*://*.hbvl.be/*",
+        "*://*.hln.be/*",
+        "*://*.knack.be/*",
+        "*://*.nieuwsblad.be/*",
+        "*://*.nos.nl/*",
+        "*://*.nrc.nl/*",
+        "*://*.nu.nl/*",
+        "*://*.pallieterke.net/*",
+        "*://*.parool.nl/*",
+        "*://*.rd.nl/*",
+        "*://*.rtl.nl/*",
+        "*://*.rtlnieuws.nl/*",
+        "*://*.sceptr.net/*",
+        "*://*.standaard.be/*",
+        "*://*.telegraaf.nl/*",
+        "*://*.tijd.be/*",
+        "*://*.trouw.nl/*",
+        "*://*.volkskrant.nl/*",
+        "*://*.vrt.be/*",
+        "*://*.wnl.tv/*"
+      ],
+      "js": [
+        "content/page.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

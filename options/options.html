@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="nl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kantlijn: indeling en feeds</title>
+  <link rel="stylesheet" href="../panel/panel.css">
+  <style>
+    body { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+    .scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+    select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--ink); }
+    .feed { font-size: .82rem; color: var(--muted); white-space: nowrap; }
+    .feed.ok { color: var(--low); }
+    .feed.bad { color: var(--high); }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  </style>
+</head>
+<body>
+  <h1>Indeling en feeds</h1>
+  <p id="disclaimer" class="meta" style="margin-top:10px"></p>
+  <p>Ben je het oneens met een indeling? Pas hem hier aan. Je keuze geldt alleen voor jou en wordt in je browser bewaard.</p>
+  <div class="row">
+    <button id="check" type="button" class="primary">Controleer alle feeds</button>
+    <button id="reset" type="button">Zet indeling terug naar standaard</button>
+  </div>
+  <p id="status" class="status" role="status" hidden></p>
+  <div class="scroll card">
+    <table>
+      <thead><tr><th>Titel</th><th>Land</th><th>Eigenaar</th><th>Indeling</th><th>Waarom</th><th>Feed</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <script type="module" src="options.js"></script>
+</body>
+</html>
