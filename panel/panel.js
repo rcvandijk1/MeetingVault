@@ -1,4 +1,6 @@
 import { analyze, bandSummary } from '../src/analyze.js';
+import { analyzeWithAI, MODELS } from '../src/ai.js';
+import { loadAiSettings, createClient, explainError } from './ai-client.js';
 import { loadAllFeeds } from '../src/feeds.js';
 import { findCoverage, sideOf } from '../src/match.js';
 import { findOutlet, hostnameOf, applyOverrides } from '../src/outlets.js';
@@ -110,7 +112,8 @@ function renderExample(ex) {
     if (after.length > room) after = `${after.slice(0, room)} …`;
   }
   const where = ex.inTitle ? 'in de kop' : ex.inQuote ? 'in een citaat' : null;
-  return h('blockquote', {}, before, h('mark', { text: sentence.slice(matchStart, matchEnd) }), after, where ? h('span', { class: 'where', text: where }) : null);
+  const quote = h('blockquote', {}, before, h('mark', { text: sentence.slice(matchStart, matchEnd) }), after, where ? h('span', { class: 'where', text: where }) : null);
+  return ex.explanation ? h('div', { class: 'example' }, quote, h('p', { class: 'explain', text: ex.explanation })) : quote;
 }
 
 function renderAnalysis(article, result) {
@@ -120,8 +123,16 @@ function renderAnalysis(article, result) {
 
   $('band').replaceChildren(
     h('span', { class: `label ${result.band}`, text: result.band }),
-    h('p', { text: bandSummary(result) }),
+    h('p', { text: result.engine === 'ai' ? result.summary : bandSummary(result) }),
   );
+  const modelName = MODELS.find((m) => m.id === result.model)?.label.split(' (')[0] || result.model;
+  $('engine').textContent = result.engine === 'ai'
+    ? `Beoordeeld door ${modelName}. Dit is het oordeel van een AI-model: het kan zich vergissen. Elk citaat is teruggezocht in het artikel.`
+    : 'Basisanalyse op woordpatronen, zonder AI.';
+
+  const missing = result.missing || [];
+  $('missing-section').hidden = missing.length === 0;
+  $('missing').replaceChildren(...missing.map((m) => h('li', { text: m })));
 
   const notes = [...result.notes];
   if (article.paywalled) notes.push('Dit artikel staat (deels) achter een betaalmuur. Mogelijk is niet de hele tekst meegenomen.');
@@ -130,7 +141,9 @@ function renderAnalysis(article, result) {
   const box = $('findings');
   box.replaceChildren();
   if (result.findings.length === 0) {
-    box.append(h('p', { class: 'empty', text: 'Geen van de bekende taalpatronen gevonden. Dat betekent niet dat het artikel klopt of volledig is: weglaten en selectief citeren zijn zo niet te zien.' }));
+    box.append(h('p', { class: 'empty', text: result.engine === 'ai'
+      ? 'Het model vond geen beïnvloedingstechnieken in deze tekst. Dat zegt niets over of de inhoud klopt.'
+      : 'Geen van de bekende taalpatronen gevonden. Dat betekent niet dat het artikel klopt of volledig is: weglaten en selectief citeren zijn zo niet te zien.' }));
   }
   result.findings.forEach((f, i) => {
     const parts = [`${f.count}×`];
@@ -155,7 +168,7 @@ function renderCoverage(cov, checked) {
   const reachable = checked - cov.failed.length;
 
   if (reachable === 0) {
-    box.append(h('p', { class: 'empty', text: 'Geen enkele nieuwsfeed was bereikbaar. Controleer je internetverbinding of bekijk de feeds bij "Indeling en feeds".' }));
+    box.append(h('p', { class: 'empty', text: 'Geen enkele nieuwsfeed was bereikbaar. Controleer je internetverbinding of bekijk de feeds bij "Instellingen".' }));
     return;
   }
 
@@ -212,7 +225,8 @@ async function report(article) {
     setStatus(article?.isSelection ? 'Selecteer eerst een stuk tekst op de pagina.' : 'Op deze pagina is geen artikeltekst gevonden. Open een artikel of kies er een op de pagina.', true);
     return;
   }
-  renderAnalysis(article, analyze(article));
+  // Beide onderdelen lopen tegelijk: de vergelijking hoeft niet op het model te wachten.
+  judge(article, run);
 
   const box = $('coverage');
   const bar = h('progress', { max: state.outlets.length, value: 0 });
@@ -225,6 +239,28 @@ async function report(article) {
     renderCoverage(findCoverage(article, feeds, state.outlets, source?.id || null), others.length);
   } catch (e) {
     if (run === state.run) box.replaceChildren(h('p', { class: 'empty', text: `De vergelijking is mislukt: ${e.message || e}` }));
+  }
+}
+
+// Beoordeelt het artikel met het AI-model. Zonder sleutel, of als de API faalt, volgt de basisanalyse.
+async function judge(article, run) {
+  const ai = await loadAiSettings();
+  if (!ai.key) {
+    renderAnalysis(article, analyze(article));
+    setStatus('Dit is de basisanalyse op woordpatronen. Voeg bij "Instellingen" een API-sleutel toe voor een beoordeling door een AI-model.');
+    return;
+  }
+  $('result').hidden = true;
+  setStatus('Het AI-model leest het artikel. Dit duurt meestal 10 tot 30 seconden.');
+  try {
+    const result = await analyzeWithAI(createClient(ai.key), article, { model: ai.model });
+    if (run !== state.run) return;
+    renderAnalysis(article, result);
+    setStatus('');
+  } catch (e) {
+    if (run !== state.run) return;
+    renderAnalysis(article, analyze(article));
+    setStatus(`${explainError(e)} Hieronder staat de basisanalyse op woordpatronen.`, true);
   }
 }
 
@@ -261,9 +297,8 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   } else if (msg.type === 'kl:selected') {
     // Het gekozen artikel heeft een ander adres dan de overzichtspagina; het resultaat mag dan blijven staan.
     state.keepResult = true;
-    report(msg.article).then(() => {
-      if (msg.article.words < 120) setStatus('Van dit artikel was weinig tekst te lezen zonder het te openen. Open het artikel en kies "Analyseer dit artikel" voor een vollediger beeld.', true);
-    });
+    if (msg.article.words < 120) msg.article.paywalled = true;
+    report(msg.article);
   }
 });
 
@@ -275,5 +310,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'sync' && changes.leanOverrides) loadOutlets().then(refreshSite);
 });
 
+async function showPrivacy() {
+  const { key } = await loadAiSettings();
+  $('privacy').textContent = key
+    ? 'De tekst van een artikel dat je laat analyseren gaat naar de API van Anthropic, via je eigen sleutel. Je leesgedrag verder niet. Voor de vergelijking haalt Kantlijn alleen de openbare nieuwsfeeds op.'
+    : 'Zonder API-sleutel gaat er geen artikeltekst naar een server. Voor de vergelijking haalt Kantlijn alleen de openbare nieuwsfeeds op.';
+}
+chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.aiKey) showPrivacy(); });
+
 await loadOutlets();
+await showPrivacy();
 await refreshSite();

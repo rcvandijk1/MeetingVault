@@ -10,10 +10,12 @@ const manifestUrl = new URL('manifest.json', root);
 const manifest = JSON.parse(readFileSync(manifestUrl, 'utf8'));
 
 const patterns = matchPatterns(outlets);
+// De AI-analyse praat rechtstreeks met de API van Anthropic.
+const hosts = [...patterns, 'https://api.anthropic.com/*'];
 const before = JSON.stringify([manifest.host_permissions, manifest.content_scripts[0].matches]);
-manifest.host_permissions = patterns;
+manifest.host_permissions = hosts;
 manifest.content_scripts[0].matches = patterns;
-const changed = before !== JSON.stringify([patterns, patterns]);
+const changed = before !== JSON.stringify([hosts, patterns]);
 
 if (process.argv.includes('--check')) {
   if (changed) { console.error('manifest.json loopt achter op data/outlets.json. Draai: npm run sync'); process.exit(1); }

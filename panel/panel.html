@@ -9,7 +9,7 @@
 <body>
   <header class="top">
     <h1>Kantlijn</h1>
-    <a id="settings" href="../options/options.html" target="_blank" rel="noopener">Indeling en feeds</a>
+    <a id="settings" href="../options/options.html" target="_blank" rel="noopener">Instellingen</a>
   </header>
 
   <section id="site" class="card" aria-live="polite"></section>
@@ -27,12 +27,18 @@
       <p id="art-source" class="meta"></p>
       <h2 id="art-title"></h2>
       <div id="band" class="band"></div>
+      <p id="engine" class="meta engine"></p>
       <ul id="notes" class="notes"></ul>
     </section>
 
     <section>
       <h3>Gevonden technieken</h3>
       <div id="findings"></div>
+    </section>
+
+    <section id="missing-section" hidden>
+      <h3>Wat ontbreekt volgens het model</h3>
+      <ul id="missing" class="card missing"></ul>
     </section>
 
     <section>
@@ -42,8 +48,8 @@
   </main>
 
   <footer>
-    <p>Kantlijn telt taalpatronen op je eigen computer. Het begrijpt de inhoud niet, controleert geen feiten en mist subtiele framing. Lees de citaten en oordeel zelf.</p>
-    <p>Er gaat geen artikeltekst naar een server. Voor de vergelijking haalt Kantlijn alleen de openbare nieuwsfeeds van de titels op.</p>
+    <p>Kantlijn controleert geen feiten. Het laat zien hoe een tekst je stuurt, niet of de inhoud waar is. Lees de citaten en oordeel zelf.</p>
+    <p id="privacy"></p>
   </footer>
 
   <script type="module" src="panel.js"></script>

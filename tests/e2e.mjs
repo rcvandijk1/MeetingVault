@@ -56,9 +56,27 @@ const context = await chromium.launchPersistentContext(mkdtempSync(join(tmpdir()
   args: [`--disable-extensions-except=${root}`, `--load-extension=${root}`, `--host-resolver-rules=MAP www.nu.nl 127.0.0.1`, '--no-proxy-server'],
 });
 let failed = false;
+// Nagebootste API van Anthropic: de extensie mag in een test geen echte sleutel of echt geld gebruiken.
+const aiAnswer = {
+  band: 'hoog',
+  summary: 'De tekst overtuigt vooral en noemt nergens een controleerbare bron.',
+  findings: [
+    { technique: 'wij-zij', quote: 'De elite laat de gewone Nederlander keihard vallen', explanation: 'Zet een naamloze groep tegenover de lezer.', in_quote: false },
+    { technique: 'vage-bron', quote: 'Volgens ingewijden is de chaos compleet', explanation: 'Niemand staat voor deze bewering in.', in_quote: false },
+    { technique: 'urgentie', quote: 'dit moet je weten', explanation: 'De kop belooft geheime kennis.', in_quote: false },
+    { technique: 'angstframing', quote: 'Het land stort morgen in', explanation: 'Dit staat niet in het artikel.', in_quote: false },
+  ],
+  missing: ['Geen enkele betrokkene komt met naam aan het woord.'],
+};
+const message = (data) => ({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'msg_test', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: JSON.stringify(data) }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 10, output_tokens: 10 } }) });
+const api = { calls: [], next: message(aiAnswer) };
 try {
   await context.route(/^https:\/\//, (route) => {
     const host = new URL(route.request().url()).hostname;
+    if (host === 'api.anthropic.com') {
+      api.calls.push({ url: route.request().url(), headers: route.request().headers(), body: route.request().postDataJSON() });
+      return route.fulfill(api.next);
+    }
     return feeds[host] ? route.fulfill({ status: 200, contentType: 'application/rss+xml', body: feeds[host] }) : route.abort();
   });
 
@@ -141,7 +159,44 @@ try {
   panel = await openPanel(artTab);
   assert.match(await panel.textContent('#site'), /centrum-rechts \(jouw indeling\)/);
 
-  // 5. Een pagina zonder toegang.
+  // 5. AI-analyse met een eigen sleutel: sleutel testen en bewaren, analyseren, en terugvallen bij een fout.
+  api.next = { status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'claude-opus-5-5', type: 'model', display_name: 'Claude Opus 5.5', created_at: '2026-01-01T00:00:00Z' }) };
+  await opts.bringToFront();
+  await opts.fill('#ai-key', 'sk-ant-test-1234');
+  await opts.click('#ai-save');
+  await opts.waitForFunction(() => /werkt en is bewaard/.test(document.getElementById('ai-status').textContent));
+  assert.match(api.calls.at(-1).url, /\/v1\/models\/claude-opus-5-5$/);
+  assert.equal(await opts.inputValue('#ai-key'), '', 'de sleutel blijft niet zichtbaar in het veld staan');
+  await shot(opts, 'instellingen.png');
+
+  api.next = message(aiAnswer);
+  await panel.waitForFunction(() => /gaat naar de API van Anthropic/.test(document.getElementById('privacy').textContent));
+  await panel.click('#btn-article');
+  await panel.waitForFunction(() => /Beoordeeld door Claude Opus 5\.5/.test(document.getElementById('engine').textContent));
+  const call = api.calls.at(-1);
+  assert.match(call.url, /\/v1\/messages/);
+  assert.match(call.headers.authorization || call.headers['x-api-key'], /sk-ant-test-1234$/, 'de sleutel van de gebruiker gaat mee');
+  assert.match(call.headers['anthropic-beta'], /server-side-fallback-2026-07-01/);
+  assert.equal(call.body.model, 'claude-opus-5-5');
+  assert.equal(call.body.fallbacks, 'default');
+  assert.equal(call.body.output_config.format.type, 'json_schema');
+  assert.match(call.body.messages[0].content, /De elite laat de gewone Nederlander/);
+  assert.equal((await panel.textContent('#band .label')).trim(), 'hoog');
+  assert.equal(await panel.locator('.finding').count(), 3, 'het verzonnen citaat wordt niet getoond');
+  assert.match(await panel.textContent('#notes'), /1 vondst is weggelaten/);
+  assert.match(await panel.textContent('#findings'), /Niemand staat voor deze bewering in/);
+  assert.match(await panel.textContent('#missing'), /Geen enkele betrokkene/);
+  await panel.waitForFunction(() => !document.querySelector('#coverage progress'));
+  await shot(panel, 'ai.png');
+
+  api.next = { status: 401, contentType: 'application/json', body: JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }) };
+  await panel.click('#btn-article');
+  await panel.waitForFunction(() => /wordt niet geaccepteerd/.test(document.getElementById('status').textContent));
+  assert.match(await panel.textContent('#engine'), /Basisanalyse op woordpatronen/);
+  assert.ok(await panel.locator('.finding').count() >= 8, 'bij een fout volgt de basisanalyse');
+  assert.equal(await panel.isHidden('#missing-section'), true);
+
+  // 6. Een pagina zonder toegang.
   const other = await context.newPage();
   await other.goto(`http://127.0.0.1:${port}/`);
   const otherPanel = await openPanel(await worker.evaluate(async () => (await chrome.tabs.query({})).find((t) => !t.url && !t.pendingUrl)?.id));

@@ -8,10 +8,19 @@ Chrome-extensie die bij een nieuwsartikel laat zien welke beïnvloedingstechniek
 
 1. **Herkent nieuwssites.** Op de 32 titels in `data/outlets.json` toont het icoon `nws`, en `art` zodra de pagina een artikel is.
 2. **Laat je een artikel kiezen.** In het zijpaneel: het geopende artikel analyseren, een artikel aanklikken op een overzichtspagina (zonder het te openen), of een geselecteerd stuk tekst analyseren.
-3. **Toont technieken met citaten.** Negen technieken, van geladen woordkeus tot anonieme bronnen. Per techniek staat waarom hij werkt en waar hij in de tekst voorkomt. De band laag, middel of hoog vat het samen.
+3. **Laat een AI-model het artikel beoordelen.** Met je eigen API-sleutel van Anthropic wijst het model per techniek de passage aan en legt uit wat die met de lezer doet. Het noemt ook wat in het artikel ontbreekt. De band laag, middel of hoog vat het samen.
 4. **Vergelijkt met andere media.** Hoeveel titels links van, in en rechts van het midden hetzelfde nieuws in hun feed hebben, van hoeveel eigenaren die titels zijn, en waar de kop vrijwel gelijk is (zelfde persbericht).
 
-Alles draait in de browser. Er gaat geen artikeltekst naar een server; alleen de openbare RSS-feeds van de titels worden opgehaald.
+Zonder sleutel, of als de API een fout geeft, krijg je een basisanalyse die alleen vaste woordpatronen telt.
+
+## AI-analyse en je sleutel
+
+- Vul je sleutel in bij **Instellingen**. Hij wordt getest en alleen op dit apparaat bewaard (`chrome.storage.local`), niet gesynchroniseerd en niet zichtbaar voor webpagina's.
+- De tekst van elk artikel dat je laat analyseren gaat naar de API van Anthropic. Er is geen tussenliggende server.
+- Je betaalt per analyse via je eigen account. Het standaardmodel is Claude Opus 5.5; in de instellingen kun je Sonnet 5.5 of Haiku 5.5 kiezen, die goedkoper zijn.
+- Elk citaat dat het model geeft wordt letterlijk teruggezocht in het artikel. Staat het er niet in, dan wordt de vondst niet getoond en zie je hoeveel er zijn weggelaten.
+- Weigert het model een artikel, dan probeert de API het zelf opnieuw op een vervangend model (server-side fallback).
+- Deze opzet is geschikt voor eigen gebruik en een kleine testgroep. Voor een breed publiek heb je een eigen server nodig, want je kunt van tieners niet verwachten dat ze een betaalde API-sleutel aanmaken.
 
 ## Installeren
 
@@ -25,9 +34,11 @@ Vereist Chrome 116 of nieuwer. Werkt niet in Chrome op telefoons, want die onder
 
 Lees dit voordat je conclusies trekt uit de uitkomsten.
 
-- **Het telt woorden, het begrijpt niets.** De analyse zoekt vaste taalpatronen. Ironie, context, selectief citeren, weglaten en misleidende cijfers ziet het niet. Een artikel met band "laag" kan onwaar zijn, een artikel met band "hoog" kan kloppen.
-- **De band is niet gekalibreerd.** De gewichten en drempels in `src/techniques.js` en `src/analyze.js` zijn een inschatting. Ze zijn niet getoetst tegen een verzameling artikelen die door mensen is beoordeeld.
-- **De links-rechtsindeling is indicatief.** Ze berust op zelfbeschrijving en gangbare typering van de titels, niet op een externe meting. Elke gebruiker kan de indeling aanpassen via **Indeling en feeds**.
+- **De AI-analyse is niet tegen de echte API getest.** In de ontwikkelomgeving was geen sleutel beschikbaar. De aanroep is getest met een nagebootste API; of het verzoek door de echte API wordt geaccepteerd en hoe goed de beoordelingen zijn, is niet vastgesteld.
+- **Het oordeel van het model is een oordeel.** Het is niet getoetst tegen artikelen die door mensen zijn beoordeeld, kan per keer verschillen en kan zelf een vooringenomenheid hebben. De instructie staat in `src/ai.js`.
+- **Het controleert geen feiten.** Een artikel met band "laag" kan onwaar zijn, een artikel met band "hoog" kan kloppen.
+- **De basisanalyse telt woorden en begrijpt niets.** Ironie, context, selectief citeren en weglaten ziet ze niet. De gewichten en drempels in `src/techniques.js` en `src/analyze.js` zijn een inschatting.
+- **De links-rechtsindeling is indicatief.** Ze berust op zelfbeschrijving en gangbare typering van de titels, niet op een externe meting. Elke gebruiker kan de indeling aanpassen via **Instellingen**.
 - **De eigenaren zijn niet nagelopen tegen een actuele bron.** Controleer `owner` in `data/outlets.json` voordat je de extensie publiceert.
 - **De feed-URL's zijn niet tegen de echte sites getest.** De ontwikkelomgeving had geen toegang tot de nieuwssites. Draai `npm run feeds` op je eigen machine, of gebruik **Controleer alle feeds** in de instellingen. Werkt een feed niet, dan zoekt de extensie zelf een feed op de homepage; lukt dat ook niet, dan telt de titel niet mee en staat hij onder "Niet te controleren".
 - **Een feed bevat alleen recent nieuws.** "Niet gevonden" betekent niet dat een titel er niet over schreef. Voor nieuws van meer dan een paar dagen oud is de vergelijking onbruikbaar.
@@ -39,13 +50,16 @@ Lees dit voordat je conclusies trekt uit de uitkomsten.
 | Pad | Inhoud |
 | --- | --- |
 | `data/outlets.json` | Titels, domeinen, indeling met onderbouwing, eigenaar, feeds |
+| `src/ai.js` | Instructie, antwoordschema en aanroep van het AI-model; zoekt citaten terug |
+| `panel/ai-client.js` | Maakt de SDK-client met de sleutel van de gebruiker, vertaalt fouten |
+| `vendor/anthropic-sdk.js` | Gebundelde Anthropic-SDK (`npm run vendor` bouwt hem opnieuw) |
 | `src/techniques.js` | Technieken en taalpatronen |
-| `src/analyze.js` | Telt treffers, weegt citaten en kop, bepaalt de band |
+| `src/analyze.js` | Basisanalyse: telt treffers, weegt citaten en kop, bepaalt de band |
 | `src/feeds.js` | RSS/Atom ophalen en ontleden, feed zoeken via homepage |
 | `src/match.js` | Zoekt dezelfde berichtgeving en telt per kant en per eigenaar |
 | `content/page.js` | Leest het artikel uit de pagina, laat een artikel aanwijzen |
 | `panel/` | Het zijpaneel |
-| `options/` | Indeling aanpassen en feeds controleren |
+| `options/` | Sleutel en model instellen, indeling aanpassen, feeds controleren |
 | `background.js` | Icoon bijwerken, zijpaneel openen |
 
 De mappen `src/` en `data/` gebruiken geen Chrome-API's. Ze zijn herbruikbaar voor een latere mobiele app of webversie.
@@ -59,14 +73,15 @@ De mappen `src/` en `data/` gebruiken geen Chrome-API's. Ze zijn herbruikbaar vo
 ## Testen
 
 ```
-npm test            # analyse, feeds, vergelijking, medialijst
-npm run test:e2e    # laadt de extensie in Chromium met nagebootste pagina's en feeds (vereist Playwright)
+npm test            # analyse, AI-aanroep, feeds, vergelijking, medialijst
+npm run test:e2e    # laadt de extensie in Chromium met nagebootste pagina's, feeds en API (vereist Playwright)
 npm run feeds       # controleert de echte feeds vanaf je eigen machine
 ```
 
 ## Toestemmingen
 
 - Toegang tot de sites in de medialijst: om artikelen te lezen en feeds op te halen.
+- Toegang tot `api.anthropic.com`: voor de AI-analyse met je eigen sleutel.
 - `activeTab` en `scripting`: om een andere pagina te analyseren nadat je zelf op het icoon klikt.
-- `storage`: je eigen indeling en een tijdelijke kopie van de feeds (15 minuten).
+- `storage`: je sleutel, je eigen indeling en een tijdelijke kopie van de feeds (15 minuten).
 - `sidePanel`: het zijpaneel.

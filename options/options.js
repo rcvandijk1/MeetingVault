@@ -1,4 +1,6 @@
 import { loadOutletFeed } from '../src/feeds.js';
+import { MODELS } from '../src/ai.js';
+import { loadAiSettings, createClient, explainError } from '../panel/ai-client.js';
 
 const $ = (id) => document.getElementById(id);
 const data = await (await fetch(chrome.runtime.getURL('data/outlets.json'))).json();
@@ -64,3 +66,42 @@ $('check').addEventListener('click', async () => {
 });
 
 render();
+
+// ---- AI-sleutel ----
+
+const ai = await loadAiSettings();
+$('ai-model').replaceChildren(...MODELS.map((m) => new Option(m.label, m.id, false, m.id === ai.model)));
+$('ai-key').placeholder = ai.key ? `Bewaard (eindigt op ${ai.key.slice(-4)})` : 'sk-ant-…';
+
+function aiStatus(text, isError = false) {
+  const el = $('ai-status');
+  el.hidden = !text;
+  el.textContent = text;
+  el.classList.toggle('error', isError);
+}
+
+$('ai-model').addEventListener('change', () => chrome.storage.local.set({ aiModel: $('ai-model').value }));
+
+$('ai-save').addEventListener('click', async () => {
+  const key = $('ai-key').value.trim() || (await loadAiSettings()).key;
+  const model = $('ai-model').value;
+  if (!key) return aiStatus('Vul eerst een sleutel in.', true);
+  aiStatus('Sleutel testen…');
+  try {
+    // Het model opvragen kost niets en bewijst dat de sleutel werkt en bij dit model mag.
+    await createClient(key).models.retrieve(model);
+    await chrome.storage.local.set({ aiKey: key, aiModel: model });
+    $('ai-key').value = '';
+    $('ai-key').placeholder = `Bewaard (eindigt op ${key.slice(-4)})`;
+    aiStatus('De sleutel werkt en is bewaard. Analyses gebruiken nu het AI-model.');
+  } catch (e) {
+    aiStatus(`De sleutel is niet bewaard. ${explainError(e)}`, true);
+  }
+});
+
+$('ai-remove').addEventListener('click', async () => {
+  await chrome.storage.local.remove('aiKey');
+  $('ai-key').value = '';
+  $('ai-key').placeholder = 'sk-ant-…';
+  aiStatus('De sleutel is verwijderd. Je krijgt weer de basisanalyse.');
+});

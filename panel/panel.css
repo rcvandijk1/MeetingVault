@@ -99,3 +99,10 @@ details.more summary { cursor: pointer; color: var(--muted); }
 progress { width: 100%; }
 
 footer { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: .8rem; }
+
+.engine { margin: 10px 0 0; }
+.example { margin-top: 8px; }
+.example blockquote { margin-top: 0; }
+.explain { margin: 4px 0 0 13px; font-size: .88rem; }
+.missing { margin: 0; padding: 10px 14px 10px 30px; font-size: .92rem; }
+.missing li + li { margin-top: 6px; }
