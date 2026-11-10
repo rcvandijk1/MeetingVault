@@ -106,3 +106,8 @@ footer { margin-top: 24px; padding-top: 12px; border-top: 1px solid var(--line);
 .explain { margin: 4px 0 0 13px; font-size: .88rem; }
 .missing { margin: 0; padding: 10px 14px 10px 30px; font-size: .92rem; }
 .missing li + li { margin-top: 6px; }
+
+.ad { border-style: dashed; margin-top: 10px; }
+.ad .actions { margin-bottom: 0; }
+a.button { display: block; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); color: var(--ink); text-decoration: none; }
+a.button:hover { border-color: var(--accent); }

@@ -1,6 +1,9 @@
 import { analyze, bandSummary } from '../src/analyze.js';
 import { analyzeWithAI, MODELS } from '../src/ai.js';
 import { loadAiSettings, createClient, explainError } from './ai-client.js';
+import { shape } from '../src/ai.js';
+import { getMembership, pickSponsor, requestServer } from '../src/membership.js';
+import { CONFIG } from '../config.js';
 import { loadAllFeeds } from '../src/feeds.js';
 import { findCoverage, sideOf } from '../src/match.js';
 import { findOutlet, hostnameOf, applyOverrides } from '../src/outlets.js';
@@ -22,7 +25,7 @@ function h(tag, props = {}, ...children) {
 
 const safeLink = (url) => (/^https?:\/\//i.test(url) ? url : null);
 
-const state = { outlets: [], leans: [], tab: null, outlet: null, pageReady: false, run: 0, shownUrl: null };
+const state = { outlets: [], leans: [], tab: null, outlet: null, pageReady: false, run: 0, shownUrl: null, sponsors: [], adCount: 0 };
 
 const cache = {
   async get(key) { try { return (await chrome.storage.session.get(key))[key] || null; } catch { return null; } },
@@ -34,6 +37,7 @@ async function loadOutlets() {
   const { leanOverrides = {} } = await chrome.storage.sync.get('leanOverrides');
   state.leans = data.leans;
   state.outlets = applyOverrides(data.outlets, leanOverrides, data.leans);
+  state.sponsors = (await (await fetch(chrome.runtime.getURL('data/sponsors.json'))).json()).sponsors;
 }
 
 function setStatus(text, isError = false) {
@@ -91,6 +95,7 @@ async function refreshSite() {
   // Een nieuw adres betekent een ander artikel: het oude resultaat hoort er niet meer bij.
   if (state.shownUrl && tab?.url && tab.url !== state.shownUrl && !state.keepResult) {
     $('result').hidden = true;
+    $('ad').hidden = true;
     state.shownUrl = null;
     setStatus('');
   }
@@ -155,9 +160,29 @@ function renderAnalysis(article, result) {
     ));
   });
 
-  $('result').hidden = false;
   state.shownUrl = state.tab?.url || article.url;
+  reveal();
 }
+
+// Een niet-lid klikt voor elk resultaat eerst een sponsorbericht weg. Het resultaat staat er al achter klaar.
+async function reveal() {
+  const { member } = await getMembership();
+  const ad = $('ad');
+  if (member) { ad.hidden = true; $('result').hidden = false; return; }
+
+  const sponsor = pickSponsor(state.sponsors, state.adCount++);
+  $('ad-label').textContent = sponsor ? (sponsor.label || 'Advertentie') : 'Kantlijn';
+  $('ad-title').textContent = sponsor ? sponsor.title : 'Lees zonder reclame';
+  $('ad-text').textContent = sponsor ? (sponsor.text || '') : 'Leden zien geen sponsorberichten en krijgen een beoordeling door een AI-model, zonder eigen API-sleutel.';
+  const link = $('ad-link');
+  const href = sponsor ? sponsor.url : CONFIG.joinUrl;
+  link.hidden = !href;
+  if (href) { link.href = href; link.textContent = sponsor ? 'Bekijk aanbieding' : 'Word lid'; }
+  $('result').hidden = true;
+  ad.hidden = false;
+  $('ad-close').focus();
+}
+$('ad-close').addEventListener('click', () => { $('ad').hidden = true; $('result').hidden = false; });
 
 const SIDE_LABEL = { links: 'Links van het midden', midden: 'Midden', rechts: 'Rechts van het midden' };
 
@@ -244,10 +269,31 @@ async function report(article) {
 
 // Beoordeelt het artikel met het AI-model. Zonder sleutel, of als de API faalt, volgt de basisanalyse.
 async function judge(article, run) {
+  $('ad').hidden = true;
+  const membership = await getMembership();
+  if (membership.member) {
+    $('result').hidden = true;
+    setStatus('Het AI-model leest het artikel. Dit duurt meestal 10 tot 30 seconden.');
+    try {
+      const { data, model } = await requestServer(article, membership.token);
+      if (run !== state.run) return;
+      renderAnalysis(article, shape(article, data, model));
+      setStatus('');
+      return;
+    } catch (e) {
+      if (run !== state.run) return;
+      const why = e.status === 401 || e.status === 403 ? 'Je lidcode wordt niet geaccepteerd. Controleer hem bij "Instellingen".'
+        : e.status === 429 ? 'Je hebt je daglimiet bereikt.'
+        : e.name === 'AbortError' ? 'De server reageerde niet op tijd.' : (e.message || String(e));
+      renderAnalysis(article, analyze(article));
+      setStatus(`${why} Hieronder staat de basisanalyse op woordpatronen.`, true);
+      return;
+    }
+  }
   const ai = await loadAiSettings();
   if (!ai.key) {
     renderAnalysis(article, analyze(article));
-    setStatus('Dit is de basisanalyse op woordpatronen. Voeg bij "Instellingen" een API-sleutel toe voor een beoordeling door een AI-model.');
+    setStatus('Dit is de basisanalyse op woordpatronen. Leden krijgen een beoordeling door een AI-model; met een eigen API-sleutel kan dat ook. Zie "Instellingen".');
     return;
   }
   $('result').hidden = true;
@@ -312,11 +358,14 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 async function showPrivacy() {
   const { key } = await loadAiSettings();
-  $('privacy').textContent = key
+  const { member } = await getMembership();
+  $('privacy').textContent = member
+    ? 'De tekst van een artikel dat je laat analyseren gaat naar de server van Kantlijn en van daar naar de API van Anthropic. Voor de vergelijking haalt Kantlijn alleen de openbare nieuwsfeeds op.'
+    : key
     ? 'De tekst van een artikel dat je laat analyseren gaat naar de API van Anthropic, via je eigen sleutel. Je leesgedrag verder niet. Voor de vergelijking haalt Kantlijn alleen de openbare nieuwsfeeds op.'
     : 'Zonder API-sleutel gaat er geen artikeltekst naar een server. Voor de vergelijking haalt Kantlijn alleen de openbare nieuwsfeeds op.';
 }
-chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.aiKey) showPrivacy(); });
+chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && (changes.aiKey || changes.memberToken)) showPrivacy(); });
 
 await loadOutlets();
 await showPrivacy();

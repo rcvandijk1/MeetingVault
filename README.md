@@ -30,6 +30,24 @@ Zonder sleutel, of als de API een fout geeft, krijg je een basisanalyse die alle
 
 Vereist Chrome 116 of nieuwer. Werkt niet in Chrome op telefoons, want die ondersteunt geen extensies.
 
+## Reclame en lidmaatschap
+
+- **Niet-leden** klikken voor elk resultaat eerst een sponsorbericht weg. De berichten staan in `data/sponsors.json`. Is die lijst leeg, dan verschijnt een uitnodiging om lid te worden.
+- **Leden** zien geen sponsorberichten en krijgen de AI-analyse via de eigen server, zonder eigen API-sleutel. Een lid vult zijn lidcode in bij **Instellingen**.
+- Lidmaatschap staat uit zolang `serverUrl` in `config.js` leeg is. Vul daar het adres van de server in en draai `npm run sync`.
+
+Wat nog niet af is:
+
+- **Er is geen betaling.** `verifyMember` in `server/deno-entry.ts` geeft altijd "geen lid" terug. Daar hoort de controle bij de betaaldienst.
+- **De server is niet uitgerold en niet op base44 getest.** `server/handler.js` is getest met nagebootste verzoeken; `server/deno-entry.ts` is een ongeteste aanzet.
+- **Google-advertenties kunnen niet in de extensie.** Het beleid van AdSense verbiedt plaatsing via browserextensies, ook in een paneel dat in de pagina wordt gezet. Sponsorberichten zijn dus berichten die je zelf plaatst of verkoopt.
+- **Het verbergen van reclame is in de browser te omzeilen.** De echte afscherming is de server: zonder geldige lidcode geen AI-analyse op jouw sleutel.
+
+### Afspraak tussen extensie en server
+
+`POST <serverUrl>` met kop `Authorization: Bearer <lidcode>` en als inhoud `{"article": {"title", "text", "isOpinion", "isSelection", "paywalled"}}`.
+Antwoord `200` met `{"data": <antwoord van het model>, "model": "<model>"}`. Fouten: `401` ongeldige lidcode, `413` artikel te lang, `429` daglimiet, `422` model weigert, `502` overige fout. De extensie zoekt de citaten zelf terug in het artikel.
+
 ## Wat het niet kan
 
 Lees dit voordat je conclusies trekt uit de uitkomsten.
@@ -59,7 +77,11 @@ Lees dit voordat je conclusies trekt uit de uitkomsten.
 | `src/match.js` | Zoekt dezelfde berichtgeving en telt per kant en per eigenaar |
 | `content/page.js` | Leest het artikel uit de pagina, laat een artikel aanwijzen |
 | `panel/` | Het zijpaneel |
-| `options/` | Sleutel en model instellen, indeling aanpassen, feeds controleren |
+| `options/` | Sleutel, model en lidcode instellen, indeling aanpassen, feeds controleren |
+| `src/membership.js` | Lidcode, keuze van het sponsorbericht, aanroep van de eigen server |
+| `server/` | Server voor leden: controleert lidcode en daglimiet, roept het model aan |
+| `config.js` | Adres van de server en van de pagina om lid te worden |
+| `data/sponsors.json` | Sponsorberichten voor niet-leden |
 | `background.js` | Icoon bijwerken, zijpaneel openen |
 
 De mappen `src/` en `data/` gebruiken geen Chrome-API's. Ze zijn herbruikbaar voor een latere mobiele app of webversie.

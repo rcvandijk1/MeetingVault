@@ -1,5 +1,7 @@
 import { loadOutletFeed } from '../src/feeds.js';
 import { MODELS } from '../src/ai.js';
+import { getMembership, setMemberToken } from '../src/membership.js';
+import { CONFIG } from '../config.js';
 import { loadAiSettings, createClient, explainError } from '../panel/ai-client.js';
 
 const $ = (id) => document.getElementById(id);
@@ -104,4 +106,29 @@ $('ai-remove').addEventListener('click', async () => {
   $('ai-key').value = '';
   $('ai-key').placeholder = 'sk-ant-…';
   aiStatus('De sleutel is verwijderd. Je krijgt weer de basisanalyse.');
+});
+
+// ---- Lidmaatschap ----
+
+const membership = await getMembership();
+$('member-off').hidden = !!CONFIG.serverUrl;
+$('member-save').disabled = !CONFIG.serverUrl;
+if (membership.token) $('member-token').placeholder = 'Bewaard';
+
+function memberStatus(text) {
+  $('member-status').hidden = !text;
+  $('member-status').textContent = text;
+}
+$('member-save').addEventListener('click', async () => {
+  const token = $('member-token').value.trim();
+  if (!token) return memberStatus('Vul eerst je lidcode in.');
+  await setMemberToken(token);
+  $('member-token').value = '';
+  $('member-token').placeholder = 'Bewaard';
+  memberStatus('Je lidcode is bewaard. De server controleert hem bij je eerstvolgende analyse.');
+});
+$('member-remove').addEventListener('click', async () => {
+  await setMemberToken('');
+  $('member-token').placeholder = '';
+  memberStatus('Je lidcode is verwijderd.');
 });

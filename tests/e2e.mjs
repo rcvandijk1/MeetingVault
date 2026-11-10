@@ -90,6 +90,16 @@ try {
     await p.waitForSelector('#site p');
     return p;
   };
+  // Een niet-lid moet voor elk resultaat eerst het sponsorbericht wegklikken.
+  const dismissAd = async (p) => {
+    await p.waitForSelector('#ad:not([hidden])');
+    assert.equal(await p.isHidden('#result'), true, 'het resultaat staat achter het sponsorbericht');
+    assert.match(await p.textContent('#ad'), /Lees zonder reclame/);
+    assert.equal(await p.isHidden('#ad-link'), true, 'zonder adres om lid te worden is er geen knop');
+    await p.click('#ad-close');
+    await p.waitForSelector('#result:not([hidden])');
+    assert.equal(await p.isHidden('#ad'), true);
+  };
   const shot = async (p, name) => { if (shots) { mkdirSync(shots, { recursive: true }); await p.screenshot({ path: join(shots, name), fullPage: true }); } };
 
   // 1. Artikelpagina: herkenning, analyse en vergelijking.
@@ -102,7 +112,7 @@ try {
   let panel = await openPanel(artTab);
   assert.match(await panel.textContent('#site'), /Nieuwssite herkend.*NU\.nl.*centrum/s);
   await panel.click('#btn-article');
-  await panel.waitForSelector('#result:not([hidden])');
+  await dismissAd(panel);
   assert.equal((await panel.textContent('#band .label')).trim(), 'hoog');
   assert.equal(await panel.textContent('#art-title'), 'SCHOKKEND: dit moet je weten over Den Haag');
   assert.ok(await panel.locator('.finding').count() >= 8);
@@ -126,7 +136,7 @@ try {
   await front.hover('#a1');
   assert.match(await front.$eval('#a1', (a) => a.style.outline), /solid/);
   await front.click('#a1');
-  await panel.waitForSelector('#result:not([hidden])');
+  await dismissAd(panel);
   assert.equal(front.url(), `${site}/`, 'de pagina navigeert niet weg bij het kiezen');
   assert.equal(await panel.textContent('#art-title'), 'Utrechtse raad stemt in met 1.200 woningen in Overvecht');
   assert.equal((await panel.textContent('#band .label')).trim(), 'laag');
@@ -187,6 +197,7 @@ try {
   assert.match(await panel.textContent('#findings'), /Niemand staat voor deze bewering in/);
   assert.match(await panel.textContent('#missing'), /Geen enkele betrokkene/);
   await panel.waitForFunction(() => !document.querySelector('#coverage progress'));
+  await dismissAd(panel);
   await shot(panel, 'ai.png');
 
   api.next = { status: 401, contentType: 'application/json', body: JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }) };

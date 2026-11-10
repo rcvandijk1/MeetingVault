@@ -109,7 +109,13 @@ export function locate(source, quote) {
  * @param client  Anthropic-client (of een nagebootste) met beta.messages.create
  * @param article {title, text, isOpinion?, isSelection?, paywalled?}
  */
-export async function analyzeWithAI(client, article, { model = DEFAULT_MODEL } = {}) {
+export async function analyzeWithAI(client, article, options = {}) {
+  const { data, model } = await requestAI(client, article, options);
+  return shape(article, data, model);
+}
+
+/** Vraagt het model om een beoordeling en geeft het ruwe, nog niet gecontroleerde antwoord terug. */
+export async function requestAI(client, article, { model = DEFAULT_MODEL } = {}) {
   const spec = MODELS.find((m) => m.id === model) || MODELS[0];
   const request = {
     model: spec.id,
@@ -144,7 +150,7 @@ export async function analyzeWithAI(client, article, { model = DEFAULT_MODEL } =
     throw err;
   }
 
-  return shape(article, data, response.model || spec.id);
+  return { data, model: response.model || spec.id };
 }
 
 /** Controleert elk citaat tegen het artikel en zet het antwoord om naar de vorm die het paneel toont. */
