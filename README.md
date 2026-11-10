@@ -4,6 +4,8 @@ Chrome-extensie die bij een nieuwsartikel laat zien welke beïnvloedingstechniek
 
 "Kantlijn" is een werknaam. De repository heet nog `MeetingVault`.
 
+De volledige bouwspecificatie staat in [`docs/SPEC.md`](docs/SPEC.md). Na een wijziging in de code: `npm run spec`.
+
 ## Wat het doet
 
 1. **Herkent nieuwssites.** Op de 32 titels in `data/outlets.json` toont het icoon `nws`, en `art` zodra de pagina een artikel is.

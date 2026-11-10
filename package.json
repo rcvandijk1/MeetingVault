@@ -9,7 +9,8 @@
     "test:e2e": "node tests/e2e.mjs",
     "sync": "node scripts/sync-manifest.mjs",
     "feeds": "node scripts/check-feeds.mjs",
-    "vendor": "esbuild scripts/vendor-entry.mjs --bundle --format=esm --platform=browser --minify --legal-comments=inline --outfile=vendor/anthropic-sdk.js"
+    "vendor": "esbuild scripts/vendor-entry.mjs --bundle --format=esm --platform=browser --minify --legal-comments=inline --outfile=vendor/anthropic-sdk.js",
+    "spec": "node scripts/build-spec.mjs"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
